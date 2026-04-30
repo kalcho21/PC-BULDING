@@ -269,14 +269,14 @@ Supabase клиентът приема **и двете** имена:
 
 ## ⚠️ Известни проблеми и технически дълг
 
-| Проблем | Файл | Приоритет |
-|---|---|---|
-| `middleware.ts` трябва да се преименува на `proxy.ts` | `middleware.ts` | Средно |
-| Stripe routes присъстват, но не се използват в UI | `app/api/payments/stripe-*` | Ниско |
-| Количката не се запазва след презареждане (без localStorage/DB) | `cart-provider.tsx` | Средно |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` не е стандартното Supabase env var | `.env.local` | Ниско |
-| `components` се зарежда целево на server и се предава като props — не се пагинира | `app/catalog/page.tsx` | Средно |
-| GPU дължина не се проверява реално (hardcoded 300mm) | `lib/compatibility.ts:364` | Средно |
+| Проблем | Файл | Приоритет | Статус |
+|---|---|---|---|
+| `middleware.ts` трябва да се преименува на `proxy.ts` | `middleware.ts` | Средно | ✅ Поправено — `proxy.ts` създаден |
+| Stripe routes присъстват, но не се използват в UI | `app/api/payments/stripe-*` | Ниско | 🟡 Остава (наследство) |
+| Количката не се запазва след презареждане | `cart-provider.tsx` | Средно | ✅ Поправено — `localStorage` се използва |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` не е стандартното Supabase env var | `.env.local` | Ниско | 🟡 Клиентът приема и двете имена |
+| `components` се зарежда целево на server и се предава като props — не се пагинира | `app/catalog/page.tsx` | Средно | 🔴 Отворено |
+| GPU дължина не се проверява реално (hardcoded 300mm) | `lib/compatibility.ts:364` | Средно | 🔴 Отворено |
 
 ---
 
