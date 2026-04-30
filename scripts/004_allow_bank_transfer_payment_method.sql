@@ -1,0 +1,4 @@
+-- Остаряло: плащанията са само Revolut. Ако вече имаш constraint с bank_transfer, можеш ръчно:
+-- ALTER TABLE manual_payment_confirmations DROP CONSTRAINT manual_payment_confirmations_payment_method_check;
+-- ALTER TABLE manual_payment_confirmations ADD CONSTRAINT manual_payment_confirmations_payment_method_check
+--   CHECK (payment_method IN ('revolut'));
