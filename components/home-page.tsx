@@ -65,6 +65,8 @@ interface PresetCard {
   name: string
   description: string
   price: string
+  /** Целева сума в € — същата се подава в конструктора за синтез около показаната цена */
+  targetEur: number
   presetKey: string
   tier: string
   color: string
@@ -296,7 +298,7 @@ export function HomePage({ categories, featuredComponents, presetComponents, cat
         description: 'Добър старт за 1080p',
         tier: 'Бюджет',
         presetKey: 'entry',
-        budget: 900,
+        targetEur: 1050,
         color: 'from-green-500/20 to-emerald-500/20',
         borderColor: 'border-green-500/30',
       },
@@ -305,7 +307,7 @@ export function HomePage({ categories, featuredComponents, presetComponents, cat
         description: 'Баланс цена/производителност',
         tier: 'Среден клас',
         presetKey: 'mid',
-        budget: 1500,
+        targetEur: 1550,
         color: 'from-blue-500/20 to-cyan-500/20',
         borderColor: 'border-blue-500/30',
       },
@@ -314,7 +316,7 @@ export function HomePage({ categories, featuredComponents, presetComponents, cat
         description: 'Максимална мощност за тежки задачи',
         tier: 'Висок клас',
         presetKey: 'high-end',
-        budget: 2500,
+        targetEur: 2600,
         color: 'from-purple-500/20 to-pink-500/20',
         borderColor: 'border-purple-500/30',
       },
@@ -323,22 +325,21 @@ export function HomePage({ categories, featuredComponents, presetComponents, cat
     return tiers.map((tier) => {
       const isHigh = tier.presetKey === 'high-end'
       const picker = isHigh ? pickUpper : pickClosest
-      const cpu = picker(cpuPool, tier.budget * 0.2)
-      const mb = pickClosest(mbPool, tier.budget * 0.13, (c) => !cpu?.specs?.socket || c.specs?.socket === cpu.specs?.socket)
-      const ram = pickClosest(ramPool, tier.budget * 0.1, (c) => !mb?.specs?.memory_type || c.specs?.type === mb.specs?.memory_type)
-      const gpu = picker(gpuPool, tier.budget * 0.35)
-      const storage = picker(storagePool, tier.budget * 0.09)
-      const extraStorage = isHigh ? picker(storagePool, tier.budget * 0.06) : null
-      const psu = picker(psuPool, tier.budget * 0.07)
-      const casePart = picker(casePool, tier.budget * 0.04)
-      const cooling = picker(coolingPool, tier.budget * 0.02)
+      const b = tier.targetEur
+      const cpu = picker(cpuPool, b * 0.2)
+      const mb = pickClosest(mbPool, b * 0.13, (c) => !cpu?.specs?.socket || c.specs?.socket === cpu.specs?.socket)
+      const ram = pickClosest(ramPool, b * 0.1, (c) => !mb?.specs?.memory_type || c.specs?.type === mb.specs?.memory_type)
+      const gpu = picker(gpuPool, b * 0.35)
+      const storage = picker(storagePool, b * 0.09)
+      const extraStorage = isHigh ? picker(storagePool, b * 0.06) : null
+      const psu = picker(psuPool, b * 0.07)
+      const casePart = picker(casePool, b * 0.04)
+      const cooling = picker(coolingPool, b * 0.02)
 
       const parts = [cpu, mb, ram, gpu, storage, extraStorage, psu, casePart, cooling].filter(Boolean) as Component[]
-      const total = parts.reduce((sum, p) => sum + p.price, 0)
-      const rounded = total > 0 ? Math.round(total / 50) * 50 : tier.budget
       return {
         ...tier,
-        price: `~${rounded} €`,
+        price: `~${tier.targetEur} €`,
         keyParts: [cpu?.name, gpu?.name, ram?.name].filter(Boolean) as string[],
       }
     })
@@ -598,7 +599,11 @@ export function HomePage({ categories, featuredComponents, presetComponents, cat
                     "cursor-pointer transition-all hover:scale-[1.02] hover:shadow-lg active:scale-[0.98]",
                     preset.borderColor
                   )}
-                  onClick={() => router.push('/builder?preset=' + preset.presetKey)}
+                  onClick={() =>
+                    router.push(
+                      `/builder?preset=${preset.presetKey}&quickBudget=1&budget=${preset.targetEur}`
+                    )
+                  }
                 >
                   <CardContent className={cn("rounded-lg bg-gradient-to-br p-4 sm:p-6", preset.color)}>
                     <Badge variant="outline" className="mb-2 sm:mb-3">{preset.tier}</Badge>

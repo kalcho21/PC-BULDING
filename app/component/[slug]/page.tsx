@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ArrowLeft, Star, ShoppingCart, Heart, Share2, Check, X } from "lucide-react"
+import { ArrowLeft, Star, ShoppingCart, Heart, Check, X } from "lucide-react"
 import Link from "next/link"
 import Image from "next/image"
 import { toast } from "sonner"
@@ -209,31 +209,30 @@ export default function ComponentDetailPage() {
           Назад към началото
         </Link>
 
-        <div className="grid lg:grid-cols-2 gap-8 mb-12">
+        <div className="grid lg:grid-cols-2 gap-8 lg:gap-10 mb-12 lg:items-start">
           {/* Product Image */}
-          <div className="relative aspect-square bg-card rounded-xl border border-border overflow-hidden">
+          <div className="relative flex w-full flex-col items-center justify-center rounded-2xl border border-border/60 bg-gradient-to-b from-card via-muted/15 to-muted/30 p-6 shadow-inner ring-1 ring-inset ring-white/[0.04] md:p-8">
             {component.image_url ? (
-              <Image
-                src={component.image_url}
-                alt={component.name}
-                fill
-                sizes="(max-width: 1024px) 100vw, 50vw"
-                className="object-contain bg-white p-2"
-              />
+              <div className="relative w-full max-w-[480px] rounded-xl bg-white p-5 shadow-lg ring-1 ring-black/[0.06] dark:bg-zinc-50 md:p-8">
+                <img
+                  src={component.image_url}
+                  alt={component.name}
+                  className="mx-auto h-auto max-h-[min(420px,50vh)] w-full object-contain object-center lg:max-h-[min(460px,52vh)]"
+                  decoding="async"
+                />
+              </div>
             ) : (
-              <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent flex items-center justify-center">
-                <div className="text-center">
-                  <div className="w-48 h-48 mx-auto bg-muted rounded-lg flex items-center justify-center mb-4">
-                    <span className="text-6xl font-bold text-muted-foreground/30">
-                      {category?.name?.charAt(0) || "?"}
-                    </span>
-                  </div>
-                  <p className="text-sm text-muted-foreground">Няма снимка</p>
+              <div className="flex min-h-[200px] w-full max-w-[480px] flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-border/70 bg-muted/20 py-12">
+                <div className="flex h-44 w-44 items-center justify-center rounded-xl bg-muted/80">
+                  <span className="text-6xl font-bold text-muted-foreground/35">
+                    {category?.name?.charAt(0) || "?"}
+                  </span>
                 </div>
+                <p className="text-sm text-muted-foreground">Няма снимка</p>
               </div>
             )}
             {!component.in_stock && (
-              <Badge variant="destructive" className="absolute top-4 right-4">
+              <Badge variant="destructive" className="absolute right-5 top-5 shadow-md">
                 Изчерпан
               </Badge>
             )}
@@ -297,49 +296,52 @@ export default function ComponentDetailPage() {
                 </div>
               </div>
 
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_auto_auto]">
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    className="h-12 shrink-0 justify-center gap-2 px-4 text-base font-medium"
+                    onClick={() => {
+                      addToCart({
+                        ...component,
+                        category: category ?? component.category,
+                        brand: brand ?? component.brand,
+                      })
+                      toast.success(`${component.name} е добавен в количката.`)
+                    }}
+                  >
+                    <ShoppingCart className="h-4 w-4 shrink-0" />
+                    <span className="truncate">
+                      {getQuantity(component.id) > 0
+                        ? `В количката (${getQuantity(component.id)})`
+                        : "Добави в количка"}
+                    </span>
+                  </Button>
+                  <Button
+                    size="lg"
+                    className="h-12 shrink-0 justify-center gap-2 bg-primary px-4 text-base font-medium hover:bg-primary/90"
+                    asChild
+                  >
+                    <Link
+                      href={`/builder?add=${component.id}`}
+                      className="inline-flex h-full w-full items-center justify-center gap-2"
+                    >
+                      <Check className="h-4 w-4 shrink-0" />
+                      <span>Добави в сглобка</span>
+                    </Link>
+                  </Button>
+                </div>
                 <Button
                   size="lg"
                   variant="outline"
-                  className="h-auto min-h-12 w-full min-w-0 whitespace-normal py-3 leading-tight"
-                  onClick={() => {
-                    addToCart({
-                      ...component,
-                      category: category ?? component.category,
-                      brand: brand ?? component.brand,
-                    })
-                    toast.success(`${component.name} е добавен в количката.`)
-                  }}
-                >
-                  <ShoppingCart className="w-5 h-5 mr-2" />
-                  {getQuantity(component.id) > 0
-                    ? `В количката (${getQuantity(component.id)})`
-                    : "Добави в количка"}
-                </Button>
-                <Button size="lg" className="h-auto min-h-12 w-full min-w-0 whitespace-normal bg-primary py-3 leading-tight hover:bg-primary/90" asChild>
-                  <Link href={`/builder?add=${component.id}`}>
-                    <Check className="w-5 h-5 mr-2" />
-                    Добави в сглобка
-                  </Link>
-                </Button>
-                <Button
-                  size="lg"
-                  variant="outline"
-                  className="h-auto min-h-12 w-full min-w-0 whitespace-normal py-3 leading-tight"
+                  className="h-12 w-full shrink-0 justify-center gap-2 px-4 text-base font-medium"
                   onClick={() => void handleToggleFavorite()}
                 >
-                  <Heart className={`w-5 h-5 ${favorites.has(component.id) ? "fill-red-500 text-red-500" : ""}`} />
-                </Button>
-                <Button
-                  size="lg"
-                  variant="outline"
-                  className="h-auto min-h-12 w-full min-w-0 whitespace-normal py-3 leading-tight"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(window.location.href)
-                    toast.success("Линкът е копиран.")
-                  }}
-                >
-                  <Share2 className="w-5 h-5" />
+                  <Heart
+                    className={`h-4 w-4 shrink-0 ${favorites.has(component.id) ? "fill-red-500 text-red-500" : ""}`}
+                  />
+                  <span>{favorites.has(component.id) ? "Премахни от любими" : "Добави в любими"}</span>
                 </Button>
               </div>
             </div>
@@ -360,16 +362,14 @@ export default function ComponentDetailPage() {
                 <CardTitle>Технически характеристики</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {Object.entries(specs).map(([key, value]) => (
                     <div
                       key={key}
-                      className="flex justify-between items-center p-3 bg-muted/50 rounded-lg"
+                      className="flex min-h-[3rem] flex-col justify-center gap-0.5 rounded-xl bg-muted/50 px-3.5 py-3 text-sm sm:flex-row sm:items-center sm:justify-between sm:gap-3"
                     >
-                      <span className="text-sm text-muted-foreground">
-                        {formatSpecLabel(key)}
-                      </span>
-                      <span className="font-medium">
+                      <span className="shrink-0 text-muted-foreground">{formatSpecLabel(key)}</span>
+                      <span className="min-w-0 break-words text-right font-medium sm:max-w-[55%] sm:text-right">
                         {formatSpecValue(key, value)}
                       </span>
                     </div>

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createClient } from "@/lib/supabase/client"
 import type { Component } from "@/lib/types"
+import { FavoriteComponentDetailDialog } from "@/components/favorite-component-detail-dialog"
 import { Header } from "@/components/header"
 import { ComponentCard } from "@/components/component-card"
 import { Button } from "@/components/ui/button"
@@ -18,6 +19,7 @@ interface FavoriteWithComponent {
 
 export default function FavoritesPage() {
   const [favorites, setFavorites] = useState<FavoriteWithComponent[]>([])
+  const [selectedFav, setSelectedFav] = useState<FavoriteWithComponent | null>(null)
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState<{ id: string } | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -104,6 +106,7 @@ export default function FavoritesPage() {
     const supabase = createClient()
     await supabase.from("favorites").delete().eq("id", favoriteId)
     setFavorites((prev) => prev.filter((f) => f.id !== favoriteId))
+    setSelectedFav((cur) => (cur?.id === favoriteId ? null : cur))
   }
 
   const filteredFavorites = useMemo(() => {
@@ -267,12 +270,27 @@ export default function FavoritesPage() {
                   </div>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  <span className="text-foreground font-medium">
-                    {favorites
-                      .slice(0, 4)
-                      .map((f) => f.component.name)
-                      .join(" · ")}
-                    {favorites.length > 4 ? ` и още ${favorites.length - 4}` : ""}
+                  <span className="text-foreground font-medium inline-flex flex-wrap items-baseline gap-x-1 gap-y-1">
+                    {favorites.slice(0, 4).map((f, idx) => (
+                      <span key={f.id} className="inline">
+                        {idx > 0 ? (
+                          <span className="text-muted-foreground font-normal"> · </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFav(f)}
+                          className="text-left text-primary hover:underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 rounded"
+                        >
+                          {f.component.name}
+                        </button>
+                      </span>
+                    ))}
+                    {favorites.length > 4 ? (
+                      <span className="text-muted-foreground font-normal">
+                        {" "}
+                        и още {favorites.length - 4}
+                      </span>
+                    ) : null}
                   </span>
                 </p>
               </CardContent>
@@ -291,18 +309,35 @@ export default function FavoritesPage() {
             ) : (
               <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {filteredFavorites.map((fav) => (
-                <div key={fav.id} className="relative">
-                  <div className="absolute inset-0 rounded-xl bg-gradient-to-b from-primary/10 via-transparent to-transparent opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
-                  <ComponentCard
-                    component={fav.component}
-                    isFavorite={true}
-                    showActions={false}
-                  />
+                <div key={fav.id} className="relative group/card">
+                  <div className="absolute inset-0 rounded-xl bg-gradient-to-b from-primary/10 via-transparent to-transparent opacity-0 transition-opacity duration-200 group-hover/card:opacity-100 pointer-events-none" />
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedFav(fav)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        setSelectedFav(fav)
+                      }
+                    }}
+                    className="block w-full cursor-pointer rounded-xl text-left outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                  >
+                    <ComponentCard
+                      component={fav.component}
+                      isFavorite={true}
+                      showActions={false}
+                    />
+                  </div>
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="absolute top-3 right-3 h-9 w-9 rounded-full border border-border/60 bg-background/85 backdrop-blur hover:bg-destructive hover:text-destructive-foreground"
-                    onClick={() => handleRemoveFavorite(fav.id)}
+                    className="absolute top-3 right-3 z-10 h-9 w-9 rounded-full border border-border/60 bg-background/85 backdrop-blur hover:bg-destructive hover:text-destructive-foreground"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      void handleRemoveFavorite(fav.id)
+                    }}
                     aria-label={`Премахни ${fav.component.name} от любими`}
                   >
                     <Trash2 className="w-4 h-4" />
@@ -314,6 +349,18 @@ export default function FavoritesPage() {
           </>
         ) : null}
       </main>
+
+      <FavoriteComponentDetailDialog
+        item={selectedFav}
+        open={selectedFav !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedFav(null)
+        }}
+        onRemovedFromFavorites={(favoriteRowId) => {
+          setFavorites((prev) => prev.filter((f) => f.id !== favoriteRowId))
+          setSelectedFav(null)
+        }}
+      />
     </div>
   )
 }

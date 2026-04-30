@@ -41,6 +41,8 @@ import {
 import { cn } from "@/lib/utils"
 import { Header } from "@/components/header"
 
+import { CompareCategoryAnalysis } from "@/components/compare-category-analysis"
+
 const categoryIcons: Record<string, React.ElementType> = {
   cpu: Cpu, gpu: Monitor, ram: MemoryStick, motherboard: CircuitBoard,
   storage: HardDrive, psu: Zap, case: Box, cooling: Fan,
@@ -50,6 +52,9 @@ const categoryLabels: Record<string, string> = {
   cpu: 'Процесори', gpu: 'Видеокарти', ram: 'RAM Памет', motherboard: 'Дънни платки',
   storage: 'Съхранение', psu: 'Захранвания', case: 'Кутии', cooling: 'Охлаждане',
 }
+
+/** Категории с реални критерии вместо оценки „игри/офис“ по рейтинг */
+const DEEP_ANALYSIS_SLUGS = new Set(['motherboard', 'cooling', 'case', 'storage', 'psu'])
 
 const useCases = [
   { key: 'gaming', label: 'Игри', icon: Gamepad2, color: 'text-green-500', bgColor: 'bg-green-500' },
@@ -490,6 +495,10 @@ function ComparePageContent() {
   }
 
   const activeComponents = components.filter(Boolean) as Component[]
+
+  const useDeepAnalysis = Boolean(
+    selectedCategory && DEEP_ANALYSIS_SLUGS.has(selectedCategory)
+  )
   
   const allSpecKeys = [...new Set(
     activeComponents.flatMap(c => Object.keys(c.specs as Record<string, unknown> || {}))
@@ -542,6 +551,16 @@ function ComparePageContent() {
       form_factor: 'Форм фактор', memory_type: 'Тип памет', wattage: 'Мощност',
       efficiency: 'Ефективност', modular: 'Модулност', read_speed: 'Скорост четене',
       write_speed: 'Скорост запис', cas_latency: 'CAS Latency',
+      memory_slots: 'Слотове RAM', max_memory: 'Макс. RAM (GB)', m2_slots: 'M.2 слотове',
+      pcie_slots: 'PCIe слотове', usb_ports: 'USB портове', wifi: 'Wi‑Fi', bluetooth: 'Bluetooth',
+      motherboard_support: 'Поддържани дъна', fan_slots: 'Слотове вентилатори', included_fans: 'Включени вентилатори',
+      radiator_support: 'Макс. радиатор (мм)', drive_bays_2_5: '2.5\" отсеци', drive_bays_3_5: '3.5\" отсеци',
+      radiator_size: 'Радиатор (мм)', fan_count: 'Брой вентилатори', height: 'Височина (мм)',
+      tdp_rating: 'TDP рейтинг (W)', socket_support: 'Сокети', noise_level: 'Шум (dB)', rpm_max: 'Макс. RPM',
+      atx_version: 'ATX версия', pcie_connectors: 'PCIe конектори', sata_connectors: 'SATA конектори',
+      warranty_years: 'Гаранция (г.)', tbw: 'TBW', dram: 'DRAM кеш', rpm: 'RPM',
+      interface: 'Интерфейс', modules: 'Модули', max_gpu_length: 'Макс. GPU дължина', max_cpu_cooler_height: 'Макс. охладител',
+      side_panel: 'Страничен панел',
     }
     return labels[key] || key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
   }
@@ -655,7 +674,8 @@ function ComparePageContent() {
                   Сравнение на продукти
                 </h1>
                 <p className="text-muted-foreground text-sm sm:text-base">
-                  Избери категория, после до три продукта — виж спецификации, оценки и (за GPU) FPS.
+                  За дъно, охлаждане, кутия, диск и захранване ползвай таба <strong className="text-foreground">„Детайлен
+                  анализ“</strong>. За CPU, GPU и RAM — оценки по приложение и пълна таблица със спецификации.
                 </p>
               </div>
             </div>
@@ -823,16 +843,36 @@ function ComparePageContent() {
 
         {/* Comparison Results */}
         {activeComponents.length >= 2 && (
-          <Tabs defaultValue="performance" className="space-y-6">
-            <TabsList className={cn(
-              "grid h-auto w-full max-w-md rounded-2xl border border-border/60 bg-card/70 p-2 shadow-sm",
-              selectedCategory === "gpu" ? "grid-cols-3" : "grid-cols-2"
-            )}>
-              <TabsTrigger value="performance">Приложение</TabsTrigger>
+          <Tabs defaultValue={useDeepAnalysis ? "analysis" : "performance"} className="space-y-6">
+            <TabsList
+              className={cn(
+                "grid h-auto w-full max-w-md rounded-2xl border border-border/60 bg-card/70 p-2 shadow-sm",
+                useDeepAnalysis
+                  ? "max-w-sm grid-cols-2"
+                  : selectedCategory === "gpu"
+                    ? "grid-cols-3"
+                    : "grid-cols-2"
+              )}
+            >
+              {!useDeepAnalysis && <TabsTrigger value="performance">Приложение</TabsTrigger>}
+              {useDeepAnalysis && <TabsTrigger value="analysis">Детайлен анализ</TabsTrigger>}
               <TabsTrigger value="specs">Спецификации</TabsTrigger>
-              {selectedCategory === 'gpu' && <TabsTrigger value="fps">FPS в игри</TabsTrigger>}
+              {!useDeepAnalysis && selectedCategory === "gpu" && (
+                <TabsTrigger value="fps">FPS в игри</TabsTrigger>
+              )}
             </TabsList>
 
+            {useDeepAnalysis && selectedCategory && (
+              <TabsContent value="analysis" className="space-y-6">
+                <CompareCategoryAnalysis
+                  categorySlug={selectedCategory}
+                  components={activeComponents}
+                  formatPrice={formatPrice}
+                />
+              </TabsContent>
+            )}
+
+            {!useDeepAnalysis && (
             <TabsContent value="performance" className="space-y-6">
               <Card className="border-border/60 bg-card/70 shadow-sm">
                 <CardHeader>
@@ -907,33 +947,54 @@ function ComparePageContent() {
                 <CardContent>
                   <div className="grid gap-4 md:grid-cols-3">
                     {activeComponents.map(component => {
-                      const scores = getBenchmarkScores(component)
-                      const avgScore = Math.round(Object.values(scores).reduce((a, b) => a + b, 0) / 6)
-                      const bestUseCase = useCases.reduce((best, uc) => 
-                        scores[uc.key] > scores[best.key] ? uc : best
+                      const normalizedByUseCase = Object.fromEntries(
+                        useCases.map((uc) => {
+                          const rows = getComparisonWithDifferences(uc.key)
+                          const row = rows.find((r) => r.component.id === component.id)
+                          return [uc.key, row?.normalizedScore ?? 0] as const
+                        })
+                      ) as Record<string, number>
+
+                      const avgNormalized = Math.round(
+                        useCases.reduce((s, uc) => s + (normalizedByUseCase[uc.key] ?? 0), 0) /
+                          useCases.length
                       )
-                      const worstUseCase = useCases.reduce((worst, uc) => 
-                        scores[uc.key] < scores[worst.key] ? uc : worst
+                      const bestUseCase = useCases.reduce((best, uc) =>
+                        (normalizedByUseCase[uc.key] ?? 0) > (normalizedByUseCase[best.key] ?? 0)
+                          ? uc
+                          : best
                       )
-                      
+                      const worstUseCase = useCases.reduce((worst, uc) =>
+                        (normalizedByUseCase[uc.key] ?? 0) < (normalizedByUseCase[worst.key] ?? 0)
+                          ? uc
+                          : worst
+                      )
+
                       return (
                         <Card key={component.id} className="border-2">
                           <CardContent className="p-4 space-y-3">
                             <h4 className="font-semibold text-center line-clamp-2">{component.name}</h4>
                             
                             <div className="text-center">
-                              <p className="text-sm text-muted-foreground">Средна оценка</p>
-                              <p className="text-3xl font-bold text-primary">{avgScore}%</p>
+                              <p className="text-sm text-muted-foreground">Средно спрямо лидерите</p>
+                              <p className="text-3xl font-bold text-primary">{avgNormalized}%</p>
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Същите проценти като в „Сравнение по приложение“ (100% = най-добрият в колоните)
+                              </p>
                             </div>
                             
                             <div className="space-y-2 text-sm">
                               <div className="flex justify-between">
                                 <span className="text-muted-foreground">Най-добър за:</span>
-                                <Badge className="bg-green-500">{bestUseCase.label} ({scores[bestUseCase.key]}%)</Badge>
+                                <Badge className="bg-green-500">
+                                  {bestUseCase.label} ({normalizedByUseCase[bestUseCase.key]}%)
+                                </Badge>
                               </div>
                               <div className="flex justify-between">
                                 <span className="text-muted-foreground">По-слаб за:</span>
-                                <Badge variant="secondary">{worstUseCase.label} ({scores[worstUseCase.key]}%)</Badge>
+                                <Badge variant="secondary">
+                                  {worstUseCase.label} ({normalizedByUseCase[worstUseCase.key]}%)
+                                </Badge>
                               </div>
                               <div className="flex justify-between pt-2 border-t">
                                 <span className="text-muted-foreground">Цена:</span>
@@ -948,6 +1009,7 @@ function ComparePageContent() {
                 </CardContent>
               </Card>
             </TabsContent>
+            )}
 
             <TabsContent value="specs">
               <Card className="border-border/60 bg-card/70 shadow-sm">
@@ -999,7 +1061,7 @@ function ComparePageContent() {
               </Card>
             </TabsContent>
 
-            {selectedCategory === 'gpu' && (
+            {selectedCategory === "gpu" && !useDeepAnalysis && (
               <TabsContent value="fps">
                 <Card className="border-border/60 bg-card/70 shadow-sm">
                   <CardHeader>

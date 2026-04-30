@@ -31,6 +31,11 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
@@ -44,6 +49,7 @@ import {
   Check,
   X
 } from "lucide-react"
+import { cn } from "@/lib/utils"
 
 export default function AdminComponentsPage() {
   const [components, setComponents] = useState<Component[]>([])
@@ -368,30 +374,75 @@ export default function AdminComponentsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredComponents.map((component) => (
+                {filteredComponents.map((component) => {
+                  const hasImagePreview = Boolean(component.image_url)
+                  return (
                   <TableRow key={component.id} className="border-border">
-                    <TableCell>
-                      <div>
+                    <TableCell className="relative align-middle">
+                      {hasImagePreview && (
+                        <HoverCard openDelay={200} closeDelay={100}>
+                          <HoverCardTrigger asChild>
+                            <div
+                              className="pointer-events-auto absolute inset-y-0 left-0 z-[5] w-[min(72rem,calc(100vw-11rem))] cursor-default max-sm:w-[calc(100vw-8rem)]"
+                              aria-hidden
+                            />
+                          </HoverCardTrigger>
+                          <HoverCardContent
+                            side="right"
+                            align="start"
+                            className="w-auto max-w-[260px] border-border bg-popover p-2 shadow-lg"
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element -- remote Supabase URLs */}
+                            <img
+                              src={component.image_url!}
+                              alt=""
+                              className="max-h-44 max-w-[240px] rounded object-contain bg-muted/20"
+                            />
+                          </HoverCardContent>
+                        </HoverCard>
+                      )}
+                      <div
+                        className={cn(
+                          "relative z-[6]",
+                          hasImagePreview && "pointer-events-none select-none",
+                        )}
+                      >
                         <p className="font-medium">{component.name}</p>
                         {component.model && (
                           <p className="text-sm text-muted-foreground">{component.model}</p>
                         )}
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell
+                      className={cn(hasImagePreview && "relative z-10 pointer-events-none select-none")}
+                    >
                       <Badge variant="outline">{getCategoryName(component.category_id)}</Badge>
                     </TableCell>
-                    <TableCell>{getBrandName(component.brand_id)}</TableCell>
-                    <TableCell className="text-right font-medium">
+                    <TableCell
+                      className={cn(hasImagePreview && "relative z-10 pointer-events-none select-none")}
+                    >
+                      {getBrandName(component.brand_id)}
+                    </TableCell>
+                    <TableCell
+                      className={cn(
+                        "text-right font-medium",
+                        hasImagePreview && "relative z-10 pointer-events-none select-none",
+                      )}
+                    >
                       ${component.price.toFixed(2)}
                     </TableCell>
-                    <TableCell className="text-center">
+                    <TableCell
+                      className={cn(
+                        "text-center",
+                        hasImagePreview && "relative z-10 pointer-events-none select-none",
+                      )}
+                    >
                       <div className="flex items-center justify-center gap-1">
                         <Star className="w-4 h-4 fill-yellow-500 text-yellow-500" />
                         <span>{component.rating?.toFixed(1) || "N/A"}</span>
                       </div>
                     </TableCell>
-                    <TableCell className="text-center">
+                    <TableCell className="relative z-20 text-center pointer-events-auto">
                       <Button
                         variant="ghost"
                         size="sm"
@@ -405,7 +456,7 @@ export default function AdminComponentsPage() {
                         )}
                       </Button>
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="relative z-20 text-right pointer-events-auto">
                       <div className="flex justify-end gap-1">
                         <Dialog>
                           <DialogTrigger asChild>
@@ -486,7 +537,8 @@ export default function AdminComponentsPage() {
                       </div>
                     </TableCell>
                   </TableRow>
-                ))}
+                  )
+                })}
               </TableBody>
             </Table>
           </div>

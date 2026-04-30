@@ -1,194 +1,206 @@
-# 🖥️ PC Конфигуратор
+# PC Конфигуратор
 
-> Сглоби мечтания си компютър — с 3D преглед в реално време, проверка на съвместимостта и Revolut плащане.
+Интерактивен уеб конфигуратор за PC: съвместимост в реално време, оценка на производителност, каталог, количка, потребителски сглобки чрез **Supabase**, плащане чрез **Revolut Personal Pay** (линк) и опционални имейли с **Resend**.
 
-![Next.js](https://img.shields.io/badge/Next.js-16-black?style=flat-square&logo=next.js)
-![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=flat-square&logo=typescript)
-![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E?style=flat-square&logo=supabase)
-![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-06B6D4?style=flat-square&logo=tailwindcss)
+Стек: **Next.js 16** (App Router), **React 19**, **TypeScript**, **Tailwind CSS v4**, **Supabase**, **Three.js** (3D преглед там, където е интегриран).
 
 ---
 
-## 📋 Съдържание
+## Съдържание
 
-- [За проекта](#-за-проекта)
-- [Функционалности](#-функционалности)
-- [Технологии](#-технологии)
-- [Структура](#-структура)
-- [Инсталация](#-инсталация)
-- [Конфигурация](#-конфигурация)
-- [База данни](#-база-данни)
-- [Плащане](#-плащане)
-
----
-
-## 🎯 За проекта
-
-**PC Конфигуратор** е уеб приложение, което позволява на потребителите да избират и сглобяват персонализирани компютърни конфигурации. Системата проверява съвместимостта на компонентите в реално време, визуализира сглобката в 3D и предоставя оценка на производителността.
+- [Изисквания](#изисквания)
+- [Бърз старт](#бърз-старт)
+- [Структура на проекта](#структура-на-проекта)
+- [Environment променливи](#environment-променливи)
+- [База данни](#база-данни)
+- [API маршрути](#api-маршрути)
+- [Архитектура и сигурност](#архитектура-и-сигурност)
+- [Плащане](#плащане)
+- [Известни ограничения](#известни-ограничения)
+- [Команди](#команди)
+- [Лиценз](#лиценз)
 
 ---
 
-## ✨ Функционалности
+## Изисквания
 
-- 🏗️ **PC Builder** — визуален конфигуратор с drag-and-drop избор на компоненти
-- 🔄 **Проверка на съвместимостта** — сокет, форм-фактор, мощност и охлаждане
-- 🎮 **3D визуализация** — Three.js преглед на сглобката
-- 📊 **Оценка на производителността** — gaming, productivity, rendering, streaming
-- 🛒 **Количка** — добавяне на части и Revolut плащане
-- 🔍 **Каталог** — филтриране по категория, марка, цена, наличност
-- ⚖️ **Сравнение** — сравняване на компоненти и сглобки
-- ❤️ **Любими** — запазване на любими компоненти
-- 👥 **Общност** — публични сглобки от потребители
-- 🔐 **Автентикация** — вход/регистрация чрез Supabase Auth
-- 🛠️ **Админ панел** — управление на компоненти, поръчки и потребители
+- **Node.js** 20+ (препоръчително LTS; минимум както позволява Next.js 16)
+- **pnpm** или **npm** (в репото има и `pnpm-lock.yaml`, и `package-lock.json` — използвай **един** мениджър последователно)
+- Проект в **Supabase** с приложена SQL схема
 
 ---
 
-## 🛠️ Технологии
-
-| Категория | Технология |
-|---|---|
-| Framework | Next.js 16 (App Router) |
-| UI | React 19 + shadcn/ui + Radix UI |
-| Стилове | Tailwind CSS v4 |
-| 3D | Three.js + @react-three/fiber |
-| База данни | Supabase (PostgreSQL) |
-| Автентикация | Supabase Auth |
-| Форми | react-hook-form + Zod |
-| Плащания | Revolut Personal Pay |
-| Имейл | Resend |
-| Аналитика | Vercel Analytics |
-
----
-
-## 📁 Структура
-
-```
-├── app/
-│   ├── admin/              # Административен панел
-│   ├── api/
-│   │   ├── auth/           # Auth callbacks
-│   │   ├── orders/         # Поръчки и имейли
-│   │   └── payments/       # Плащания (Revolut, Stripe)
-│   ├── builder/            # PC Конфигуратор
-│   ├── cart/               # Количка
-│   ├── catalog/            # Каталог с компоненти
-│   ├── community/          # Публични сглобки
-│   ├── compare/            # Сравнение на компоненти
-│   ├── builds/             # Лични сглобки
-│   └── favorites/          # Любими
-├── components/             # React компоненти
-├── lib/
-│   ├── supabase/           # Supabase клиент
-│   ├── compatibility.ts    # Логика за съвместимост
-│   ├── types.ts            # TypeScript типове
-│   └── ...
-└── scripts/                # SQL миграции
-```
-
----
-
-## 🚀 Инсталация
-
-### Изисквания
-
-- Node.js 18+
-- pnpm (препоръчително) или npm
-
-### Стъпки
+## Бърз старт
 
 ```bash
-# 1. Клонирай репото
 git clone https://github.com/kalcho21/PC-BULDING.git
 cd PC-BULDING
 
-# 2. Инсталирай зависимостите
+# Инсталация (избери едно)
 pnpm install
-# или
-npm install
+# или: npm install
 
-# 3. Копирай .env файла
 cp .env.example .env.local
+# Попълни .env.local — виж секцията по-долу
 
-# 4. Попълни .env.local с реалните ключове (виж секцията по-долу)
+# В Supabase → SQL Editor изпълни миграциите в подходящ ред (виж „База данни“)
 
-# 5. Стартирай dev сървъра
 pnpm dev
-# или
-npm run dev
+# или: npm run dev
 ```
 
-Приложението ще бъде достъпно на [http://localhost:3000](http://localhost:3000)
+Приложението: [http://localhost:3000](http://localhost:3000).
 
----
+Production build:
 
-## ⚙️ Конфигурация
-
-Копирай `.env.example` като `.env.local` и попълни следните стойности:
-
-```env
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-
-# Supabase — от Settings → API
-NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
-SUPABASE_SERVICE_ROLE_KEY=sb_secret_...
-
-# Resend — за имейли при поръчка (незадължителен)
-RESEND_API_KEY=re_xxxxxxxxx
-ORDER_NOTIFICATION_EMAIL=orders@example.com
-ORDER_EMAIL_FROM=PC Builder <orders@example.com>
-
-# Админ достъп
-ADMIN_DASHBOARD_PASSWORD=your_password
+```bash
+pnpm build && pnpm start
+# или: npm run build && npm run start
 ```
 
 ---
 
-## 🗄️ База данни
-
-Проектът използва **Supabase (PostgreSQL)** с Row Level Security.
-
-### Главни таблици
-
-| Таблица | Описание |
-|---|---|
-| `components` | Всички PC компоненти |
-| `categories` | Категории (CPU, GPU, RAM...) |
-| `brands` | Производители |
-| `builds` | Потребителски сглобки |
-| `build_items` | Компоненти в сглобка |
-| `profiles` | Потребителски профили |
-| `favorites` | Любими компоненти |
-| `compatibility_rules` | Правила за съвместимост |
-
-### Миграции
-
-SQL скриптовете са в папка `/scripts/`. Изпълни ги в ред в Supabase SQL Editor:
+## Структура на проекта
 
 ```
-scripts/001_create_schema.sql     — Основна схема
-scripts/002_simple_schema.sql     — Опростена схема
-scripts/003_manual_payment_confirmations.sql
-scripts/004_allow_bank_transfer_payment_method.sql
-scripts/add-new-components.sql    — Примерни данни
+├── app/
+│   ├── layout.tsx, page.tsx, globals.css
+│   ├── admin/           # Админ панел
+│   ├── auth/            # Вход, регистрация, callback (Route Handler)
+│   ├── builder/         # Конфигуратор
+│   ├── builds/          # Сглобки
+│   ├── build-compare/
+│   ├── cart/
+│   ├── catalog/
+│   ├── community/
+│   ├── compare/
+│   ├── component/[slug]/
+│   ├── favorites/
+│   ├── success/
+│   └── api/             # Само съществуващи route handlers — виж по-долу
+├── components/          # UI, странични компоненти, cart-provider, shadcn/ui в ui/
+├── lib/
+│   ├── supabase/
+│   │   ├── client.ts    # Browser клиент
+│   │   ├── server.ts    # Server клиент (async)
+│   │   └── proxy.ts     # updateSession за middleware
+│   ├── compatibility.ts, build-wattage.ts, types.ts, …
+│   └── …
+├── hooks/
+├── middleware.ts        # Session refresh; връзка с lib/supabase/proxy.ts
+├── scripts/             # SQL за Supabase
+├── public/
+└── styles/
+```
+
+**Middleware:** в root е `middleware.ts`. При `next build` Next.js 16 може да покаже предупреждение за преименуване към конвенцията `proxy` — следвай официалната документация на Next при бъдеща миграция.
+
+**TypeScript:** в `next.config.mjs` е зададено `ignoreBuildErrors: true` — билдът не спира при грешки в типовете; за качество на кода пускай локално проверки/линт.
+
+---
+
+## Environment променливи
+
+Копирай `.env.example` в `.env.local` и попълни.
+
+| Променлива | Задължително | Описание |
+|-------------|--------------|----------|
+| `NEXT_PUBLIC_SUPABASE_URL` | да (за auth и данни) | URL на проекта в Supabase |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | да* | Стандартният **anon** ключ от Settings → API |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | да* | Алтернатива на anon, ако ползваш новия формат на ключовете |
+| `SUPABASE_SERVICE_ROLE_KEY` | за admin API и частни операции | Само на сървъра; никога в `NEXT_PUBLIC_*` |
+| `ADMIN_DASHBOARD_PASSWORD` | силно препоръчително в продукция | Парола за `/admin` (в кода има слаб fallback за dev — виж `lib/admin-api-auth.ts`) |
+| `ADMIN_METRICS_PASSWORD` | не | Алтернативно име за същата админ тайна в някои настройки |
+| `NEXT_PUBLIC_APP_URL` | препоръчително | Базов URL на приложението |
+| `NEXT_PUBLIC_SUPABASE_AUTH_REDIRECT_URL` | по избор | Redirect към `/auth/callback` при нужда |
+| `NEXT_PUBLIC_SITE_URL` | по избор | Алтернатива за изграждане на callback URL в `lib/auth-redirect.ts` |
+| `RESEND_API_KEY` | за имейли | Resend API ключ |
+| `ORDER_EMAIL_FROM` | за имейли | Подател за thank-you имейли |
+| `ORDER_NOTIFICATION_EMAIL` | по избор | Документиран в `.env.example`; провери дали го ползва твоят деплой |
+
+\* Трябва да е зададен **поне един** от `NEXT_PUBLIC_SUPABASE_ANON_KEY` или `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` — виж `lib/supabase/client.ts`.
+
+**Сигурност:** service role ключ и Resend ключ са секрети — само в среда на сървъра / `.env.local`, не в клиентски код.
+
+---
+
+## База данни
+
+PostgreSQL чрез Supabase; очакват се таблици като компоненти, категории, сглобки, профили, любими и др. (виж съществуващите `.sql` файлове).
+
+Изпълни в **Supabase → SQL Editor** в смислен ред според това коя „линтер“ схема ползваш:
+
+| Файл | Бележка |
+|------|---------|
+| `scripts/001_create_schema.sql` | Пълна/основна схема (ако е твоят избор) |
+| `scripts/001_core_tables.sql` | Алтернатива/допълнение — прочети коментарите вътре преди да смесваш с друг 001 |
+| `scripts/002_simple_schema.sql` | Опростен вариант |
+| `scripts/003_manual_payment_confirmations.sql` | Ръчни потвърждения на плащания |
+| `scripts/004_allow_bank_transfer_payment_method.sql` | Метод банков превод |
+| `scripts/005_kingston_fury_beast_1_eur.sql` | Примерни/конкретни данни |
+| `scripts/add-new-components.sql` | Примерно попълване на компоненти |
+
+Не смесвай два несъвместими „основни“ 001 скрипта без да провериш дубликати на таблици.
+
+---
+
+## API маршрути
+
+Реално налични под `app/api`:
+
+| Път | Назначение |
+|-----|------------|
+| `GET/POST …` `/api/admin/builds-list` | Админ: списък сглобки |
+| `GET/POST …` `/api/admin/favorites-list` | Админ: любими |
+| `GET/POST …` `/api/admin/metrics` | Админ метрики |
+| `GET/POST …` `/api/admin/profiles` | Админ профили |
+| `/api/auth/confirmation-link` | Потвърждаване/линкове (сървърна логика с service role) |
+| `/api/orders/customer-thank-you` | Thank-you имейл след поръчка (Resend) |
+| `/api/payments/manual-confirmation` | Ръчно потвърждение (напр. скрийншот Revolut) |
+
+OAuth/session callback за Supabase е при **`app/auth/callback`**, не под `app/api/auth/callback`.
+
+---
+
+## Архитектура и сигурност
+
+- **Страници:** Server Components зареждат данни чрез Supabase server client; интерактивни части са Client Components.
+- **Клиент:** `import { createClient } from '@/lib/supabase/client'`
+- **Сървър / Route Handler:** `import { createClient } from '@/lib/supabase/server'` (функцията е `async`)
+- **Middleware:** `middleware.ts` извиква `updateSession` от `@/lib/supabase/proxy`
+
+**Админ:** достъпът до `/admin` е защитен с парола от env (виж `lib/admin-api-auth.ts`). Задай силна парола в продукция.
+
+**RLS:** политиките в Supabase трябва да съответстват на приложението — не ги отключвай публично без причина.
+
+---
+
+## Плащане
+
+Потокът е ориентиран към **Revolut Personal Pay** — генериране на линк с сума и референция (напр. номер на поръчка), плащане от клиента в приложението Revolut и опционално ръчно потвърждение от админ. Детайлите са в `lib/revolut-personal-url.ts` и свързаните страници (количка, success, admin).
+
+---
+
+## Известни ограничения
+
+- Каталогът може да зарежда много данни наведнъж (без сървърна пагинация в някои сценарии).
+- Част от съвместимостта използва опростени допускания (напр. GPU дължина) — виж `lib/compatibility.ts`.
+- Количката е предимно клиентска (напр. localStorage) — поведение при презареждане зависи от имплементацията в `components/cart-provider.tsx`.
+- Пълната документация за екипа и конвенциите може да е в [`AGENTS.md`](./AGENTS.md) (ако е поддържан).
+
+---
+
+## Команди
+
+```bash
+pnpm dev          # или npm run dev
+pnpm build        # или npm run build
+pnpm start        # или npm run start
+pnpm lint         # или npm run lint
 ```
 
 ---
 
-## 💳 Плащане
-
-Плащането се осъществява чрез **Revolut Personal Pay**:
-
-1. Клиентът попълва имена и имейл в количката
-2. Системата генерира уникален номер на поръчката (`ORD-XXXXXX-YYYY`)
-3. Клиентът отваря Revolut линк с предварително попълнена сума и бележка
-4. Администраторът потвърждава плащането ръчно от `/admin`
-5. Клиентът получава имейл потвърждение (чрез Resend)
-
----
-
-## 📝 Лиценз
+## Лиценз
 
 MIT © [kalcho21](https://github.com/kalcho21)

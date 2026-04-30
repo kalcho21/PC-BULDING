@@ -19,6 +19,11 @@ import {
   GitCompare
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from '@/components/ui/hover-card'
 
 const categoryIcons: Record<string, React.ElementType> = {
   cpu: Cpu,
@@ -40,6 +45,8 @@ interface ComponentCardProps {
   isInBuild?: boolean
   isComparing?: boolean
   showActions?: boolean
+  /** Малък преглед на снимката при hover (ако има image_url). */
+  showImageHoverPreview?: boolean
 }
 
 export function ComponentCard({
@@ -51,6 +58,7 @@ export function ComponentCard({
   isInBuild = false,
   isComparing = false,
   showActions = true,
+  showImageHoverPreview = true,
 }: ComponentCardProps) {
   const categorySlug = component.category?.slug || 'cpu'
   const Icon = categoryIcons[categorySlug] || Cpu
@@ -86,7 +94,7 @@ export function ComponentCard({
     }
   }
 
-  return (
+  const card = (
     <Card className={cn(
       'group relative overflow-hidden transition-all duration-200 hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5',
       isInBuild && 'border-primary/50 bg-primary/5'
@@ -175,5 +183,47 @@ export function ComponentCard({
         </div>
       </CardContent>
     </Card>
+  )
+
+  if (!component.image_url || !showImageHoverPreview) {
+    return card
+  }
+
+  return (
+    <HoverCard openDelay={160} closeDelay={60}>
+      <HoverCardTrigger asChild>
+        <div className="rounded-xl outline-none">{card}</div>
+      </HoverCardTrigger>
+      <HoverCardContent
+        side="bottom"
+        align="center"
+        sideOffset={10}
+        collisionPadding={12}
+        className={cn(
+          'w-[min(92vw,288px)] overflow-hidden rounded-xl border border-border/80',
+          'bg-card/95 p-0 text-popover-foreground shadow-2xl shadow-black/40',
+          'backdrop-blur-xl ring-1 ring-primary/15',
+        )}
+      >
+        <div className="border-b border-border/60 bg-muted/25 px-3 py-2.5">
+          <p className="line-clamp-2 text-xs font-semibold leading-snug tracking-tight text-foreground">
+            {component.name}
+          </p>
+          <p className="mt-1 text-[11px] font-medium text-primary tabular-nums">
+            {formatPrice(component.price)}
+          </p>
+        </div>
+        <div className="bg-gradient-to-b from-muted/30 via-background/80 to-muted/40 px-3 pb-3 pt-3">
+          <div className="rounded-lg bg-white/95 p-2.5 shadow-inner ring-1 ring-black/5 dark:bg-zinc-100/95 dark:ring-white/10">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={component.image_url}
+              alt=""
+              className="mx-auto max-h-52 w-full max-w-[260px] object-contain"
+            />
+          </div>
+        </div>
+      </HoverCardContent>
+    </HoverCard>
   )
 }

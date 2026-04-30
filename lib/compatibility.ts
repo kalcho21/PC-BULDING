@@ -85,6 +85,7 @@ const cpuPerformanceMultipliers: Record<string, number> = {
   // AMD Ryzen 7000
   'Ryzen 9 7950X3D': 1.02,
   'Ryzen 9 7950X': 0.98,
+  'Ryzen 9 7900X3D': 1.03,
   'Ryzen 9 7900X': 0.96,
   'Ryzen 7 7800X3D': 1.02,
   'Ryzen 7 7700X': 0.94,

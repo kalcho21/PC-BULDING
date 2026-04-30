@@ -8,6 +8,16 @@ import { Category, Brand, Component, BuildState, CompatibilityIssue } from '@/li
 import { createClient } from '@/lib/supabase/client'
 import { useCart } from '@/components/cart-provider'
 import { estimateBuildWattage } from '@/lib/build-wattage'
+import {
+  analyzeBuildPerformance,
+  matchBenchmark,
+  cpuBenchmarks,
+  gpuBenchmarks,
+  asFiniteNumber,
+  clampScore,
+  normalizeName,
+  parseCacheAmount,
+} from '@/lib/build-performance-score'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -61,6 +71,7 @@ import {
   ShoppingCart,
   Menu,
   Download,
+  Trophy,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -93,7 +104,27 @@ const initialBuildState: BuildState = {
 }
 
 type BuildUseCase = 'gaming' | 'office' | 'graphics' | 'programming'
-type BuildPriority = 'balanced' | 'budget' | 'performance' | 'efficiency' | 'brand'
+
+/** Пресети за разпределение на бюджета по категории */
+type BuilderBudgetPreset = 'entry' | 'mid' | 'high-end'
+
+function allocationTierForTargetEur(eur: number): BuilderBudgetPreset {
+  if (eur < 1250) return 'entry'
+  if (eur < 2000) return 'mid'
+  return 'high-end'
+}
+
+type BuilderPresetInput = BuilderBudgetPreset | { customTargetEur: number }
+
+type BuilderPresetBuildOptions = {
+  /** Бърз старт от началната страница — без карти „Топ предложения“, директно най-добрият вариант */
+  skipVariantCards?: boolean
+}
+
+/** Нормален синтез: повече гъвкавост преди squeeze. */
+const DEFAULT_BUDGET_MAX_FACTOR = 1.12
+/** Бърз старт: общата сума да не надвишава целта с повече от ~3.5% (вместо +12%). */
+const QUICK_START_BUDGET_MAX_FACTOR = 1.035
 
 const buildUseCaseOptions: Array<{ value: BuildUseCase; label: string }> = [
   { value: 'gaming', label: 'Гейминг' },
@@ -102,34 +133,447 @@ const buildUseCaseOptions: Array<{ value: BuildUseCase; label: string }> = [
   { value: 'programming', label: 'Програмиране' },
 ]
 
-const buildPriorityOptions: Array<{ value: BuildPriority; label: string }> = [
-  { value: 'balanced', label: 'Баланс' },
-  { value: 'budget', label: 'Бюджет' },
-  { value: 'performance', label: 'Производителност' },
-  { value: 'efficiency', label: 'Енергийна ефективност' },
-  { value: 'brand', label: 'Марка' },
-]
-
-function pickRandom<T>(items: T[]): T | undefined {
-  if (items.length === 0) return undefined
-  return items[Math.floor(Math.random() * items.length)]
+/** Най-висок score под тавана по цена; при равенство — по-скъпият (обикновено по-висок клас). */
+function pickBestUnderCap(
+  items: Component[],
+  maxPrice: number,
+  scoreFn: (c: Component) => number,
+  filter?: (c: Component) => boolean
+): Component | null {
+  const pool = items
+    .filter((c) => c.in_stock)
+    .filter((c) => !Number.isFinite(maxPrice) || maxPrice <= 0 || c.price <= maxPrice)
+    .filter((c) => !filter || filter(c))
+  if (pool.length === 0) return null
+  return [...pool].sort((a, b) => {
+    const d = scoreFn(b) - scoreFn(a)
+    if (Math.abs(d) > 0.0001) return d
+    return b.price - a.price
+  })[0]
 }
 
-function pickRandomNearPrice(
+function pickBestWithBudgetSlack(
   items: Component[],
-  targetPrice: number,
-  maxPrice?: number,
+  maxPrice: number,
+  scoreFn: (c: Component) => number,
+  filter?: (c: Component) => boolean
+): Component | null {
+  return (
+    pickBestUnderCap(items, maxPrice, scoreFn, filter) ??
+    pickBestUnderCap(items, maxPrice * 1.4, scoreFn, filter) ??
+    pickBestUnderCap(items, Number.POSITIVE_INFINITY, scoreFn, filter) ??
+    pickCheapestUnderCap(items, maxPrice, filter)
+  )
+}
+
+/** k=0 е най-добрият; k=1 вторият по score и т.н. */
+function pickKthBestWithBudgetSlack(
+  items: Component[],
+  maxPrice: number,
+  scoreFn: (c: Component) => number,
+  k: number,
+  filter?: (c: Component) => boolean
+): Component | null {
+  const rankAtCap = (cap: number) => {
+    const pool = items
+      .filter((c) => c.in_stock)
+      .filter((c) => !Number.isFinite(cap) || cap <= 0 || c.price <= cap)
+      .filter((c) => !filter || filter(c))
+    if (pool.length === 0) return null
+    const sorted = [...pool].sort((a, b) => {
+      const d = scoreFn(b) - scoreFn(a)
+      if (Math.abs(d) > 0.0001) return d
+      return b.price - a.price
+    })
+    const idx = Math.min(Math.max(0, k), sorted.length - 1)
+    return sorted[idx] ?? null
+  }
+  return rankAtCap(maxPrice) ?? rankAtCap(maxPrice * 1.4) ?? rankAtCap(Number.POSITIVE_INFINITY) ?? null
+}
+
+/** Висок клас: първо най-висока цена в тавана; при равна цена — по-висок score за типа. */
+function pickExpensiveFirstUnderCap(
+  items: Component[],
+  maxPrice: number,
+  scoreFn: (c: Component) => number,
+  filter?: (c: Component) => boolean
+): Component | null {
+  const pool = items
+    .filter((c) => c.in_stock)
+    .filter((c) => !Number.isFinite(maxPrice) || maxPrice <= 0 || c.price <= maxPrice)
+    .filter((c) => !filter || filter(c))
+  if (pool.length === 0) return null
+  return [...pool].sort((a, b) => {
+    if (b.price !== a.price) return b.price - a.price
+    return scoreFn(b) - scoreFn(a)
+  })[0]
+}
+
+function pickExpensiveFirstWithBudgetSlack(
+  items: Component[],
+  maxPrice: number,
+  scoreFn: (c: Component) => number,
+  filter?: (c: Component) => boolean
+): Component | null {
+  return (
+    pickExpensiveFirstUnderCap(items, maxPrice, scoreFn, filter) ??
+    pickExpensiveFirstUnderCap(items, maxPrice * 1.4, scoreFn, filter) ??
+    pickExpensiveFirstUnderCap(items, Number.POSITIVE_INFINITY, scoreFn, filter) ??
+    pickCheapestUnderCap(items, maxPrice, filter)
+  )
+}
+
+function pickKthExpensiveFirstWithBudgetSlack(
+  items: Component[],
+  maxPrice: number,
+  scoreFn: (c: Component) => number,
+  k: number,
+  filter?: (c: Component) => boolean
+): Component | null {
+  const rankAtCap = (cap: number) => {
+    const pool = items
+      .filter((c) => c.in_stock)
+      .filter((c) => !Number.isFinite(cap) || cap <= 0 || c.price <= cap)
+      .filter((c) => !filter || filter(c))
+    if (pool.length === 0) return null
+    const sorted = [...pool].sort((a, b) => {
+      if (b.price !== a.price) return b.price - a.price
+      return scoreFn(b) - scoreFn(a)
+    })
+    const idx = Math.min(Math.max(0, k), sorted.length - 1)
+    return sorted[idx] ?? null
+  }
+  return rankAtCap(maxPrice) ?? rankAtCap(maxPrice * 1.4) ?? rankAtCap(Number.POSITIVE_INFINITY) ?? null
+}
+
+/** Fallback под max цена — никога скъп „случаен“ компонент */
+function pickCheapestUnderCap(
+  items: Component[],
+  maxPrice: number,
   filter?: (item: Component) => boolean
 ): Component | null {
-  const pool = (filter ? items.filter(filter) : items)
+  const pool = items
     .filter((item) => item.in_stock)
     .filter((item) => (typeof maxPrice === 'number' ? item.price <= maxPrice : true))
+    .filter((item) => !filter || filter(item))
   if (pool.length === 0) return null
-  const sorted = [...pool].sort(
-    (a, b) => Math.abs(a.price - targetPrice) - Math.abs(b.price - targetPrice)
-  )
-  const shortlist = sorted.slice(0, Math.min(6, sorted.length))
-  return pickRandom(shortlist) ?? shortlist[0] ?? null
+  return [...pool].sort((a, b) => a.price - b.price)[0]
+}
+
+function caseFitsMotherboardFormFactor(caseComponent: Component, formFactor: string | undefined): boolean {
+  if (!formFactor) return true
+  const supported = caseComponent.specs?.motherboard_support || []
+  const caseFormFactor = caseComponent.specs?.form_factor || ''
+
+  if (Array.isArray(supported) && supported.length > 0) {
+    return supported.includes(formFactor)
+  }
+
+  const formFactorHierarchy: Record<string, string[]> = {
+    'Full-Tower': ['E-ATX', 'ATX', 'Micro-ATX', 'Mini-ITX'],
+    'Mid-Tower': ['ATX', 'Micro-ATX', 'Mini-ITX'],
+    'Mini-Tower': ['Micro-ATX', 'Mini-ITX'],
+    'Mini-ITX': ['Mini-ITX'],
+  }
+
+  const supportedFactors = formFactorHierarchy[caseFormFactor] || []
+  return supportedFactors.includes(formFactor)
+}
+
+function totalBuildPriceState(build: BuildState): number {
+  let t = 0
+  if (build.cpu) t += build.cpu.price
+  if (build.gpu) t += build.gpu.price
+  if (build.ram) t += build.ram.price
+  if (build.motherboard) t += build.motherboard.price
+  if (build.psu) t += build.psu.price
+  if (build.case) t += build.case.price
+  if (build.cooling) t += build.cooling.price
+  for (const s of build.storage) t += s.price
+  return t
+}
+
+/** Намалява цената с по-евтини (но съвместими) части, докато сумата ≤ cap */
+function squeezeBuildUnderCap(build: BuildState, allComponents: Component[], capEuro: number): BuildState {
+  const cur: BuildState = {
+    ...build,
+    storage: [...build.storage],
+  }
+
+  const sum = () => totalBuildPriceState(cur)
+
+  for (let iter = 0; iter < 120 && sum() > capEuro; iter++) {
+    const mbForm = cur.motherboard?.specs?.form_factor
+    const cpuSocket = cur.cpu?.specs?.socket
+    const mbSocket = cur.motherboard?.specs?.socket
+    const memType = cur.motherboard?.specs?.memory_type
+
+    const minPsuWatts = () => Math.ceil(estimateBuildWattage(cur) * 1.12)
+
+    let bestOldPrice = -1
+    let applySwap: (() => void) | null = null
+
+    const consider = (current: Component, replacement: Component, doSwap: () => void) => {
+      if (replacement.price >= current.price) return
+      if (current.price > bestOldPrice) {
+        bestOldPrice = current.price
+        applySwap = doSwap
+      }
+    }
+
+    if (cur.gpu) {
+      const alts = allComponents.filter(
+        (c) => c.category?.slug === 'gpu' && c.in_stock && c.price < cur.gpu!.price
+      )
+      const next = [...alts].sort((a, b) => a.price - b.price)[0]
+      if (next) consider(cur.gpu, next, () => { cur.gpu = next })
+    }
+
+    if (cur.cpu) {
+      const alts = allComponents.filter(
+        (c) =>
+          c.category?.slug === 'cpu' &&
+          c.in_stock &&
+          c.price < cur.cpu!.price &&
+          (!mbSocket || c.specs?.socket === mbSocket)
+      )
+      const next = [...alts].sort((a, b) => a.price - b.price)[0]
+      if (next) consider(cur.cpu, next, () => { cur.cpu = next })
+    }
+
+    if (cur.motherboard) {
+      const alts = allComponents.filter(
+        (c) =>
+          c.category?.slug === 'motherboard' &&
+          c.in_stock &&
+          c.price < cur.motherboard!.price &&
+          (!cpuSocket || c.specs?.socket === cpuSocket)
+      )
+      const next = [...alts].sort((a, b) => a.price - b.price)[0]
+      if (next) consider(cur.motherboard, next, () => { cur.motherboard = next })
+    }
+
+    if (cur.ram) {
+      const alts = allComponents.filter(
+        (c) =>
+          c.category?.slug === 'ram' &&
+          c.in_stock &&
+          c.price < cur.ram!.price &&
+          (!memType || c.specs?.type === memType)
+      )
+      const next = [...alts].sort((a, b) => a.price - b.price)[0]
+      if (next) consider(cur.ram, next, () => { cur.ram = next })
+    }
+
+    cur.storage.forEach((st, idx) => {
+      const alts = allComponents.filter(
+        (c) => c.category?.slug === 'storage' && c.in_stock && c.price < st.price
+      )
+      const next = [...alts].sort((a, b) => a.price - b.price)[0]
+      if (next) consider(st, next, () => { cur.storage[idx] = next })
+    })
+
+    if (cur.psu) {
+      const wMin = minPsuWatts()
+      const alts = allComponents.filter(
+        (c) =>
+          c.category?.slug === 'psu' &&
+          c.in_stock &&
+          c.price < cur.psu!.price &&
+          (c.specs?.wattage || 0) >= wMin
+      )
+      const next = [...alts].sort((a, b) => a.price - b.price)[0]
+      if (next) consider(cur.psu, next, () => { cur.psu = next })
+    }
+
+    if (cur.case) {
+      const alts = allComponents.filter(
+        (c) =>
+          c.category?.slug === 'case' &&
+          c.in_stock &&
+          c.price < cur.case!.price &&
+          caseFitsMotherboardFormFactor(c, mbForm)
+      )
+      const next = [...alts].sort((a, b) => a.price - b.price)[0]
+      if (next) consider(cur.case, next, () => { cur.case = next })
+    }
+
+    if (cur.cooling) {
+      const alts = allComponents.filter(
+        (c) => c.category?.slug === 'cooling' && c.in_stock && c.price < cur.cooling!.price
+      )
+      const next = [...alts].sort((a, b) => a.price - b.price)[0]
+      if (next) consider(cur.cooling, next, () => { cur.cooling = next })
+    }
+
+    const swapFn = applySwap
+    if (!swapFn) break
+    ;(swapFn as () => void)()
+  }
+
+  return cur
+}
+
+/**
+ * Ако основният алгоритъм е оставил празни слотове (тесни max цени и пр.),
+ * допълва слотовете. При high-end: най-скъпите съвместими в тавана; иначе по score.
+ */
+function ensureCompleteBuild(
+  build: BuildState,
+  allComponents: Component[],
+  budgetMaxEuro: number,
+  useCase: BuildUseCase,
+  preferMostExpensive = false
+): BuildState {
+  const b: BuildState = { ...build, storage: [...build.storage] }
+
+  const cheapestIn = (pool: Component[]): Component | null =>
+    pool.length ? [...pool].sort((a, x) => a.price - x.price)[0] : null
+
+  const expensiveIn = (pool: Component[]): Component | null =>
+    pool.length ? [...pool].sort((a, x) => x.price - a.price)[0] : null
+
+  const pickForSlot = (
+    pool: Component[],
+    softCap: number,
+    scoreFn: (c: Component) => number,
+    filter?: (c: Component) => boolean
+  ): Component | null => {
+    if (pool.length === 0) return null
+    if (preferMostExpensive) {
+      return (
+        pickExpensiveFirstWithBudgetSlack(pool, softCap, scoreFn, filter) ??
+        expensiveIn(pool.filter((c) => c.in_stock))
+      )
+    }
+    return (
+      pickBestWithBudgetSlack(pool, softCap, scoreFn, filter) ?? cheapestIn(pool.filter((c) => c.in_stock))
+    )
+  }
+
+  for (let iter = 0; iter < 28; iter++) {
+    const total = totalBuildPriceState(b)
+    const softCap = Math.max(budgetMaxEuro * 1.22 - total, 100)
+
+    let progressed = false
+
+    if (!b.cpu) {
+      const pool = allComponents.filter((c) => c.category?.slug === 'cpu' && c.in_stock)
+      const p = pickForSlot(pool, softCap, (c) => scoreCpuForUseCase(c, useCase))
+      if (p) {
+        b.cpu = p
+        progressed = true
+        continue
+      }
+      break
+    }
+
+    const cpuSocket = b.cpu.specs?.socket
+
+    if (!b.motherboard) {
+      const pool = allComponents.filter(
+        (c) =>
+          c.category?.slug === 'motherboard' &&
+          c.in_stock &&
+          (!cpuSocket || c.specs?.socket === cpuSocket)
+      )
+      const p = pickForSlot(pool, softCap, (c) => scoreMotherboardForUseCase(c, useCase))
+      if (p) {
+        b.motherboard = p
+        progressed = true
+        continue
+      }
+    }
+
+    const mbMem = b.motherboard?.specs?.memory_type
+    if (!b.ram) {
+      let pool = allComponents.filter(
+        (c) =>
+          c.category?.slug === 'ram' && c.in_stock && (!mbMem || c.specs?.type === mbMem)
+      )
+      let p = pickForSlot(pool, softCap, (c) => scoreRamForUseCase(c, useCase))
+      if (!p) {
+        pool = allComponents.filter((c) => c.category?.slug === 'ram' && c.in_stock)
+        p = pickForSlot(pool, softCap, (c) => scoreRamForUseCase(c, useCase))
+      }
+      if (p) {
+        b.ram = p
+        progressed = true
+        continue
+      }
+    }
+
+    if (!b.gpu) {
+      const pool = allComponents.filter((c) => c.category?.slug === 'gpu' && c.in_stock)
+      const p = pickForSlot(pool, softCap, (c) => scoreGpuForUseCase(c, useCase))
+      if (p) {
+        b.gpu = p
+        progressed = true
+        continue
+      }
+    }
+
+    if (b.storage.length === 0) {
+      const pool = allComponents.filter((c) => c.category?.slug === 'storage' && c.in_stock)
+      const p = pickForSlot(pool, softCap, (c) => scoreStorageForUseCase(c, useCase))
+      if (p) {
+        b.storage = [p]
+        progressed = true
+        continue
+      }
+    }
+
+    const minW = Math.ceil(estimateBuildWattage(b) * 1.1)
+    if (!b.psu) {
+      let pool = allComponents.filter(
+        (c) =>
+          c.category?.slug === 'psu' && c.in_stock && (c.specs?.wattage || 0) >= minW
+      )
+      let p = pickForSlot(pool, softCap, (c) => scorePsuForUseCase(c, useCase, minW))
+      if (!p) {
+        pool = allComponents.filter((c) => c.category?.slug === 'psu' && c.in_stock)
+        p = pickForSlot(pool, softCap, (c) => scorePsuForUseCase(c, useCase, minW))
+      }
+      if (p) {
+        b.psu = p
+        progressed = true
+        continue
+      }
+    }
+
+    const mbForm = b.motherboard?.specs?.form_factor
+    if (!b.case) {
+      let pool = allComponents.filter(
+        (c) =>
+          c.category?.slug === 'case' && c.in_stock && caseFitsMotherboardFormFactor(c, mbForm)
+      )
+      let p = pickForSlot(pool, softCap, (c) => scoreCaseForUseCase(c, useCase))
+      if (!p) {
+        pool = allComponents.filter((c) => c.category?.slug === 'case' && c.in_stock)
+        p = pickForSlot(pool, softCap, (c) => scoreCaseForUseCase(c, useCase))
+      }
+      if (p) {
+        b.case = p
+        progressed = true
+        continue
+      }
+    }
+
+    if (!b.cooling) {
+      const pool = allComponents.filter((c) => c.category?.slug === 'cooling' && c.in_stock)
+      const cpuTdp = asFiniteNumber(b.cpu?.specs?.tdp, 125)
+      const p = pickForSlot(pool, softCap, (c) => scoreCoolingForUseCase(c, useCase, cpuTdp))
+      if (p) {
+        b.cooling = p
+        progressed = true
+        continue
+      }
+    }
+
+    if (!progressed) break
+  }
+
+  return b
 }
 
 // FPS estimates for popular games
@@ -142,57 +586,6 @@ const gameFpsEstimates: Record<string, { base1080p: number; base1440p: number; b
   'Cyberpunk 2077': { base1080p: 100, base1440p: 65, base4k: 35 },
 }
 
-const cpuBenchmarks: Record<string, { gaming: number; productivity: number }> = {
-  'Ryzen 9 9950X3D': { gaming: 100, productivity: 98 },
-  'Ryzen 9 9950X': { gaming: 94, productivity: 100 },
-  'Ryzen 9 7950X3D': { gaming: 95, productivity: 92 },
-  'Ryzen 9 7950X': { gaming: 88, productivity: 93 },
-  'Ryzen 7 9800X3D': { gaming: 98, productivity: 72 },
-  'Ryzen 7 7800X3D': { gaming: 94, productivity: 64 },
-  'Ryzen 7 9700X': { gaming: 85, productivity: 72 },
-  'Ryzen 7 7700X': { gaming: 78, productivity: 66 },
-  'Ryzen 5 9600X': { gaming: 80, productivity: 58 },
-  'Ryzen 5 7600X': { gaming: 74, productivity: 54 },
-  'Ryzen 5 7600': { gaming: 72, productivity: 52 },
-  'Ryzen 5 7500F': { gaming: 70, productivity: 50 },
-  'Ryzen 5 5600X': { gaming: 58, productivity: 42 },
-  'Ryzen 5 5600': { gaming: 55, productivity: 40 },
-  'Ryzen 3 4100': { gaming: 28, productivity: 20 },
-  'Core Ultra 9 285K': { gaming: 94, productivity: 96 },
-  'Core Ultra 7 265K': { gaming: 88, productivity: 84 },
-  'Core Ultra 5 245K': { gaming: 80, productivity: 72 },
-  'i9-14900K': { gaming: 91, productivity: 94 },
-  'i7-14700K': { gaming: 84, productivity: 84 },
-  'i5-14600K': { gaming: 76, productivity: 68 },
-  'i9-13900K': { gaming: 86, productivity: 90 },
-  'i7-13700K': { gaming: 78, productivity: 76 },
-  'i5-13600K': { gaming: 72, productivity: 64 },
-  'i5-12400F': { gaming: 52, productivity: 38 },
-}
-
-const gpuBenchmarks: Record<string, { gaming: number; creator: number }> = {
-  'RTX 5090': { gaming: 100, creator: 100 },
-  'RTX 5080': { gaming: 88, creator: 90 },
-  'RTX 5070 Ti': { gaming: 77, creator: 80 },
-  'RTX 5070': { gaming: 68, creator: 72 },
-  'RTX 4090': { gaming: 95, creator: 98 },
-  'RTX 4080 SUPER': { gaming: 84, creator: 86 },
-  'RTX 4080': { gaming: 80, creator: 82 },
-  'RTX 4070 Ti SUPER': { gaming: 72, creator: 76 },
-  'RTX 4070 Ti': { gaming: 68, creator: 72 },
-  'RTX 4070 SUPER': { gaming: 63, creator: 66 },
-  'RTX 4070': { gaming: 58, creator: 60 },
-  'RTX 4060 Ti': { gaming: 46, creator: 48 },
-  'RTX 4060': { gaming: 38, creator: 40 },
-  'RX 9070 XT': { gaming: 78, creator: 72 },
-  'RX 9070': { gaming: 68, creator: 64 },
-  'RX 7900 XTX': { gaming: 82, creator: 74 },
-  'RX 7900 XT': { gaming: 72, creator: 66 },
-  'RX 7800 XT': { gaming: 58, creator: 54 },
-  'RX 7700 XT': { gaming: 50, creator: 46 },
-  'RX 7600 XT': { gaming: 38, creator: 34 },
-}
-
 const gameProfiles = {
   'CS2': { base: 950, gpuWeight: 0.42, cpuWeight: 0.48, ramWeight: 0.1, vramMin: 6 },
   'Valorant': { base: 1000, gpuWeight: 0.4, cpuWeight: 0.5, ramWeight: 0.1, vramMin: 6 },
@@ -202,47 +595,467 @@ const gameProfiles = {
   'Cyberpunk 2077': { base: 190, gpuWeight: 0.75, cpuWeight: 0.15, ramWeight: 0.1, vramMin: 12 },
 } as const
 
-function asFiniteNumber(v: unknown, fallback: number): number {
-  if (typeof v === 'number' && Number.isFinite(v)) return v
-  const n = Number(v)
-  return Number.isFinite(n) ? n : fallback
+function psuEfficiencyTierScore(eff: string): number {
+  const e = eff.toLowerCase()
+  if (e.includes('titanium')) return 100
+  if (e.includes('platinum')) return 88
+  if (e.includes('gold')) return 72
+  if (e.includes('silver')) return 56
+  if (e.includes('bronze')) return 42
+  return 28
 }
 
-function clampScore(value: number, min = 0, max = 100): number {
-  return Math.max(min, Math.min(max, Math.round(value)))
+function scoreCpuForUseCase(c: Component, useCase: BuildUseCase): number {
+  const matched = matchBenchmark(cpuBenchmarks, c)
+  const cores = asFiniteNumber(c.specs?.cores, 4)
+  const threads = asFiniteNumber(c.specs?.threads, Math.max(cores, 4))
+  const boost = asFiniteNumber(c.specs?.boost_clock, 4)
+  const base = asFiniteNumber(c.specs?.base_clock, 3.2)
+  const cache = parseCacheAmount(c.specs?.cache)
+  const tdp = asFiniteNumber(c.specs?.tdp, 65)
+  const architecture = normalizeName(c.specs?.architecture)
+
+  let archFactor = 1
+  if (architecture.includes('zen 5')) archFactor = 1.1
+  else if (architecture.includes('zen 4')) archFactor = 1.05
+  else if (architecture.includes('zen 2')) archFactor = 0.88
+
+  const gaming =
+    matched?.gaming ??
+    clampScore(
+      ((cores / 8) * 26 + (threads / 16) * 16 + (boost / 5.8) * 34 + (base / 4.2) * 10 + (cache / 96) * 14) *
+        archFactor,
+      12,
+      100
+    )
+
+  const productivity =
+    matched?.productivity ??
+    clampScore(
+      ((cores / 16) * 38 + (threads / 32) * 26 + (boost / 5.8) * 18 + (cache / 96) * 10) * archFactor,
+      12,
+      100
+    )
+
+  const programmingBlend = clampScore(
+    productivity * 0.48 + gaming * 0.35 + (cache / 96) * 22 + (boost / 5.8) * 12,
+    12,
+    100
+  )
+
+  const officeBlend = clampScore(
+    productivity * 0.38 +
+      gaming * 0.12 +
+      (cores >= 6 ? 10 : 0) -
+      Math.max(0, tdp - 65) * 0.15 +
+      (tdp <= 65 ? 8 : 0),
+    15,
+    100
+  )
+
+  const graphicsBlend = clampScore(productivity * 0.62 + gaming * 0.28 + (cache / 96) * 12, 12, 100)
+
+  switch (useCase) {
+    case 'gaming':
+      return gaming
+    case 'office':
+      return officeBlend
+    case 'graphics':
+      return graphicsBlend
+    case 'programming':
+      return programmingBlend
+    default:
+      return gaming
+  }
 }
 
-function normalizeName(value: string | null | undefined): string {
-  return (value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+function scoreGpuForUseCase(c: Component, useCase: BuildUseCase): number {
+  const matched = matchBenchmark(gpuBenchmarks, c)
+  const vram = asFiniteNumber(c.specs?.vram, 8)
+  const busWidth = asFiniteNumber(c.specs?.bus_width, 128)
+  const tdp = asFiniteNumber(c.specs?.tdp, 150)
+  const rawCuda = asFiniteNumber(c.specs?.cuda_cores, 0)
+  const rawStream = asFiniteNumber(c.specs?.stream_processors, 0)
+  const normalizedShaders = rawCuda > 0 ? rawCuda : rawStream * 0.42
+
+  const gaming =
+    matched?.gaming ??
+    clampScore(
+      (normalizedShaders / 18000) * 50 + (vram / 24) * 22 + (busWidth / 384) * 18 + (tdp / 420) * 10,
+      10,
+      100
+    )
+
+  const creator =
+    matched?.creator ?? clampScore(gaming * 0.94 + (vram / 24) * 12 + (normalizedShaders / 18000) * 8, 10, 100)
+
+  const graphicsBlend = clampScore(creator * 0.58 + gaming * 0.28 + (vram / 24) * 18, 10, 100)
+
+  const programmingBlend = clampScore(
+    gaming * 0.28 + creator * 0.42 + (vram / 32) * 22 + (busWidth / 384) * 8,
+    10,
+    100
+  )
+
+  const officeBlend = clampScore(
+    42 + Math.max(0, 95 - tdp / 4.2) * 0.65 + gaming * 0.14 + (vram >= 8 ? 10 : vram >= 6 ? 5 : 0),
+    8,
+    100
+  )
+
+  switch (useCase) {
+    case 'gaming':
+      return gaming
+    case 'graphics':
+      return graphicsBlend
+    case 'programming':
+      return programmingBlend
+    case 'office':
+      return officeBlend
+    default:
+      return gaming
+  }
 }
 
-function parseCacheAmount(cache: unknown): number {
-  if (typeof cache !== 'string') return 0
-  const match = cache.match(/(\d+(?:\.\d+)?)/)
-  return match ? Number(match[1]) : 0
+function scoreRamForUseCase(c: Component, useCase: BuildUseCase): number {
+  const capacity = asFiniteNumber(c.specs?.capacity, 8)
+  const speed = asFiniteNumber(c.specs?.speed, 3200)
+  const isDdr5 = normalizeName(c.specs?.type).includes('ddr5')
+  const base = clampScore((capacity / 32) * 55 + (speed / 6400) * 35 + (isDdr5 ? 10 : 0), 10, 100)
+
+  switch (useCase) {
+    case 'gaming':
+      return base
+    case 'office':
+      return clampScore(
+        (Math.min(capacity, 32) / 32) * 50 + (speed / 5200) * 35 + (isDdr5 ? 6 : 0) + (capacity >= 16 ? 6 : 0),
+        10,
+        100
+      )
+    case 'graphics':
+      return clampScore((capacity / 64) * 58 + (speed / 6400) * 38 + (isDdr5 ? 14 : 0), 10, 100)
+    case 'programming':
+      return clampScore((capacity / 48) * 52 + (speed / 6400) * 42 + (isDdr5 ? 12 : 0), 10, 100)
+    default:
+      return base
+  }
 }
 
-function matchBenchmark<T>(map: Record<string, T>, component: Component | null): T | null {
-  if (!component) return null
-  const normalizedModel = normalizeName(component.model)
-  const normalizedName = normalizeName(component.name)
-  const entries = Object.entries(map).sort((a, b) => b[0].length - a[0].length)
+function scoreStorageForUseCase(c: Component, useCase: BuildUseCase): number {
+  const read = asFiniteNumber(c.specs?.read_speed, 500)
+  const write = asFiniteNumber(c.specs?.write_speed, 400)
+  const cap = asFiniteNumber(c.specs?.capacity, 512)
+  const rawIface = `${String(c.specs?.interface || '')} ${String(c.specs?.type || '')}`.toLowerCase()
+  const nvme = rawIface.includes('nvme') || rawIface.includes('pcie')
 
-  for (const [key, value] of entries) {
-    const normalizedKey = normalizeName(key)
-    if (
-      normalizedModel.includes(normalizedKey) ||
-      normalizedName.includes(normalizedKey)
-    ) {
-      return value
+  const speedScore = clampScore(
+    (read / 7200) * 52 + (write / 5500) * 28 + (nvme ? 22 : rawIface.includes('sata') && !rawIface.includes('hdd') ? 12 : 4),
+    8,
+    100
+  )
+
+  switch (useCase) {
+    case 'gaming':
+      return clampScore(speedScore * 0.92 + Math.min(cap / 2048, 1) * 12, 8, 100)
+    case 'office':
+      return clampScore(speedScore * 0.78 + (cap >= 500 ? 8 : 0), 8, 100)
+    case 'graphics':
+      return clampScore(speedScore * 0.88 + Math.min(cap / 2048, 1) * 18 + (nvme ? 6 : 0), 8, 100)
+    case 'programming':
+      return clampScore(speedScore * 0.95 + Math.min(cap / 1024, 1) * 14 + (nvme ? 8 : 0), 8, 100)
+    default:
+      return speedScore
+  }
+}
+
+function scoreMotherboardForUseCase(c: Component, useCase: BuildUseCase): number {
+  const m2 = asFiniteNumber(c.specs?.m2_slots, 1)
+  const maxMem = asFiniteNumber(c.specs?.max_memory, 64)
+  const pcie = asFiniteNumber(c.specs?.pcie_slots, 2)
+  const ddr5 = normalizeName(c.specs?.memory_type).includes('ddr5')
+  const wifi = c.specs?.wifi ? 7 : 0
+
+  let s =
+    m2 * 7 +
+    Math.min(maxMem / 128, 1) * 28 +
+    pcie * 3.5 +
+    (ddr5 ? 10 : 0) +
+    wifi +
+    (c.rating || 4) * 2.2
+
+  switch (useCase) {
+    case 'gaming':
+      s += pcie * 4 + m2 * 3
+      break
+    case 'graphics':
+      s += Math.min(maxMem / 128, 1) * 22 + m2 * 5
+      break
+    case 'programming':
+      s += m2 * 5 + Math.min(maxMem / 128, 1) * 18
+      break
+    case 'office':
+      s += 6
+      break
+    default:
+      break
+  }
+
+  return s
+}
+
+function scorePsuForUseCase(c: Component, useCase: BuildUseCase, minWatts: number): number {
+  const w = asFiniteNumber(c.specs?.wattage, 0)
+  const eff = psuEfficiencyTierScore(String(c.specs?.efficiency || ''))
+  const headroom = w >= minWatts ? Math.min(22, ((w - minWatts) / Math.max(minWatts, 1)) * 18) : -40
+  let s = eff + headroom + Math.min(w / 1200, 1) * 10 + (c.rating || 4) * 1.5
+  if (useCase === 'office') s += eff * 0.08
+  return s
+}
+
+function scoreCaseForUseCase(c: Component, useCase: BuildUseCase): number {
+  const fanSlots = asFiniteNumber(c.specs?.fan_slots, 2)
+  const incFans = asFiniteNumber(c.specs?.included_fans, 1)
+  const gpuLen = asFiniteNumber(c.specs?.max_gpu_length, 300)
+  const rad = asFiniteNumber(c.specs?.radiator_support, 0)
+  const side = String(c.specs?.side_panel || '').toLowerCase()
+  const mesh = side.includes('mesh') || side.includes('мреж')
+
+  let s =
+    fanSlots * 3.5 +
+    incFans * 5 +
+    gpuLen / 38 +
+    rad / 45 +
+    (mesh ? 18 : 0) +
+    (c.rating || 4) * 2.5
+
+  switch (useCase) {
+    case 'gaming':
+      s += mesh ? 14 : 0
+      break
+    case 'office':
+      s += incFans * 3
+      break
+    case 'graphics':
+      s += gpuLen / 50 + fanSlots * 2
+      break
+    case 'programming':
+      s += (mesh ? 8 : 0) + fanSlots * 2
+      break
+    default:
+      break
+  }
+
+  return s
+}
+
+function scoreCoolingForUseCase(c: Component, useCase: BuildUseCase, cpuTdp: number): number {
+  const rating = asFiniteNumber(c.specs?.tdp_rating, 95)
+  const rad = asFiniteNumber(c.specs?.radiator_size, 0)
+  const noise = asFiniteNumber(c.specs?.noise_level, 0)
+  const typ = String(c.specs?.type || '').toLowerCase()
+  const aio = typ.includes('водно') || typ.includes('aio') || typ.includes('liquid')
+
+  const headroom = cpuTdp > 0 ? Math.min(35, (rating / Math.max(cpuTdp, 35)) * 28) : rating / 4
+
+  let s = headroom + rad / 42 + (aio ? 12 : 7) + (c.rating || 4) * 2
+
+  if (noise > 0) {
+    s += Math.max(0, 16 - noise / 5)
+  } else {
+    s += 5
+  }
+
+  if (useCase === 'gaming' && rad >= 240) s += 12
+  if (useCase === 'office' && noise > 0) s += 8
+
+  return s
+}
+
+type SynthesisRanks = { cpuRank: number; gpuRank: number }
+
+function buildComponentSignature(b: BuildState): string {
+  const ids: string[] = []
+  if (b.cpu) ids.push(b.cpu.id)
+  if (b.gpu) ids.push(b.gpu.id)
+  if (b.ram) ids.push(b.ram.id)
+  if (b.motherboard) ids.push(b.motherboard.id)
+  if (b.psu) ids.push(b.psu.id)
+  if (b.case) ids.push(b.case.id)
+  if (b.cooling) ids.push(b.cooling.id)
+  for (const s of b.storage) ids.push(s.id)
+  return [...ids].sort().join('|')
+}
+
+/** Обобщена „пригодност“ за подредба на топ вариантите (по-високо = по-подходящ за избрания тип). */
+function totalBuildFitScore(b: BuildState, useCase: BuildUseCase): number {
+  const minPsuW = Math.ceil(estimateBuildWattage(b) * 1.15)
+  const cpuTdp = asFiniteNumber(b.cpu?.specs?.tdp, 125)
+  let s = 0
+  if (b.cpu) s += scoreCpuForUseCase(b.cpu, useCase)
+  if (b.gpu) s += scoreGpuForUseCase(b.gpu, useCase) * 1.08
+  if (b.ram) s += scoreRamForUseCase(b.ram, useCase) * 0.88
+  for (const st of b.storage) s += scoreStorageForUseCase(st, useCase) * 0.82
+  if (b.motherboard) s += scoreMotherboardForUseCase(b.motherboard, useCase) * 0.38
+  if (b.psu) s += scorePsuForUseCase(b.psu, useCase, Math.max(minPsuW, 380)) * 0.28
+  if (b.case) s += scoreCaseForUseCase(b.case, useCase) * 0.22
+  if (b.cooling) s += scoreCoolingForUseCase(b.cooling, useCase, cpuTdp) * 0.22
+  return s
+}
+
+function synthesizeBuildWithRanks(
+  components: Component[],
+  budget: { target: number; max: number; label: string },
+  tierAllocations: Record<string, number>,
+  useCase: BuildUseCase,
+  ranks: SynthesisRanks,
+  preferMostExpensive: boolean
+): BuildState {
+  const newBuild: BuildState = { ...initialBuildState }
+  const targetBudget = budget.target
+  const tightBudget =
+    targetBudget <= 1200 || budget.max <= targetBudget * 1.06
+
+  const getMaxPrice = (categoryKey: string, multiplier = 1.25) => {
+    const base = targetBudget * (tierAllocations[categoryKey] || 0)
+    const capMult = tightBudget ? Math.min(multiplier, 1.12) : multiplier
+    return base * capMult
+  }
+
+  const pickRanked = (
+    pool: Component[],
+    maxP: number,
+    scoreFn: (c: Component) => number,
+    k: number,
+    filter?: (c: Component) => boolean
+  ) =>
+    preferMostExpensive
+      ? pickKthExpensiveFirstWithBudgetSlack(pool, maxP, scoreFn, k, filter)
+      : pickKthBestWithBudgetSlack(pool, maxP, scoreFn, k, filter)
+
+  const pickOne = (
+    pool: Component[],
+    maxP: number,
+    scoreFn: (c: Component) => number,
+    filter?: (c: Component) => boolean
+  ) =>
+    preferMostExpensive
+      ? pickExpensiveFirstWithBudgetSlack(pool, maxP, scoreFn, filter)
+      : pickBestWithBudgetSlack(pool, maxP, scoreFn, filter)
+
+  const selectedCpu = pickRanked(
+    components.filter((c) => c.category?.slug === 'cpu'),
+    getMaxPrice('cpu'),
+    (c) => scoreCpuForUseCase(c, useCase),
+    ranks.cpuRank
+  )
+
+  if (selectedCpu) {
+    newBuild.cpu = selectedCpu
+    const cpuSocket = selectedCpu.specs?.socket
+
+    const selectedMb =
+      pickOne(
+        components.filter((c) => c.category?.slug === 'motherboard'),
+        getMaxPrice('motherboard'),
+        (c) => scoreMotherboardForUseCase(c, useCase),
+        (c) => !cpuSocket || c.specs?.socket === cpuSocket
+      ) ??
+      pickCheapestUnderCap(
+        components.filter((c) => c.category?.slug === 'motherboard'),
+        getMaxPrice('motherboard'),
+        (c) => !cpuSocket || c.specs?.socket === cpuSocket
+      )
+
+    if (selectedMb) {
+      newBuild.motherboard = selectedMb
+      const mbMemoryType = selectedMb.specs?.memory_type
+
+      newBuild.ram =
+        pickOne(
+          components.filter((c) => c.category?.slug === 'ram'),
+          getMaxPrice('ram'),
+          (c) => scoreRamForUseCase(c, useCase),
+          (c) => !mbMemoryType || c.specs?.type === mbMemoryType
+        ) ??
+        pickCheapestUnderCap(
+          components.filter((c) => c.category?.slug === 'ram'),
+          getMaxPrice('ram'),
+          (c) => !mbMemoryType || c.specs?.type === mbMemoryType
+        )
     }
   }
 
-  return null
+  newBuild.gpu =
+    pickRanked(
+      components.filter((c) => c.category?.slug === 'gpu'),
+      getMaxPrice('gpu'),
+      (c) => scoreGpuForUseCase(c, useCase),
+      ranks.gpuRank
+    ) ?? pickCheapestUnderCap(components.filter((c) => c.category?.slug === 'gpu'), getMaxPrice('gpu'))
+
+  const selectedStorage =
+    pickOne(
+      components.filter((c) => c.category?.slug === 'storage'),
+      getMaxPrice('storage', 1.35),
+      (c) => scoreStorageForUseCase(c, useCase)
+    ) ??
+    pickCheapestUnderCap(
+      components.filter((c) => c.category?.slug === 'storage'),
+      getMaxPrice('storage', 1.35)
+    )
+
+  newBuild.storage = selectedStorage ? [selectedStorage] : []
+
+  const estimatedWatt = estimateBuildWattage(newBuild)
+
+  newBuild.psu =
+    pickOne(
+      components.filter((c) => c.category?.slug === 'psu'),
+      getMaxPrice('psu', 1.35),
+      (c) => scorePsuForUseCase(c, useCase, estimatedWatt * 1.15),
+      (c) => (c.specs?.wattage || 0) >= estimatedWatt * 1.15
+    ) ??
+    pickOne(
+      components.filter((c) => c.category?.slug === 'psu'),
+      getMaxPrice('psu', 1.35),
+      (c) => scorePsuForUseCase(c, useCase, estimatedWatt),
+      (c) => (c.specs?.wattage || 0) >= estimatedWatt
+    ) ??
+    pickCheapestUnderCap(
+      components.filter((c) => c.category?.slug === 'psu'),
+      getMaxPrice('psu', 1.35) * 1.25,
+      (c) => (c.specs?.wattage || 0) >= estimatedWatt * 1.15
+    ) ??
+    pickCheapestUnderCap(
+      components.filter((c) => c.category?.slug === 'psu'),
+      budget.max * 0.25,
+      (c) => (c.specs?.wattage || 0) >= estimatedWatt
+    )
+
+  const mbFormFactor = newBuild.motherboard?.specs?.form_factor
+
+  const caseCandidates = components.filter(
+    (c) => c.category?.slug === 'case' && c.in_stock && caseFitsMotherboardFormFactor(c, mbFormFactor)
+  )
+
+  newBuild.case =
+    pickOne(caseCandidates, getMaxPrice('case', 1.5), (c) => scoreCaseForUseCase(c, useCase)) ??
+    pickCheapestUnderCap(caseCandidates, getMaxPrice('case', 1.5))
+
+  const cpuTdpPick = asFiniteNumber(newBuild.cpu?.specs?.tdp, 125)
+  newBuild.cooling =
+    pickOne(
+      components.filter((c) => c.category?.slug === 'cooling'),
+      getMaxPrice('cooling', 1.5),
+      (c) => scoreCoolingForUseCase(c, useCase, cpuTdpPick)
+    ) ??
+    pickCheapestUnderCap(
+      components.filter((c) => c.category?.slug === 'cooling'),
+      getMaxPrice('cooling', 1.5)
+    )
+
+  const filledBuild = ensureCompleteBuild(newBuild, components, budget.max, useCase, preferMostExpensive)
+  return squeezeBuildUnderCap(filledBuild, components, budget.max)
 }
 
 export function BuilderPage({ categories, brands, components }: BuilderPageProps) {
@@ -250,6 +1063,8 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
   const searchParams = useSearchParams()
   const { totalItems } = useCart()
   const [build, setBuild] = useState<BuildState>(initialBuildState)
+  const [synthesisResults, setSynthesisResults] = useState<Array<{ build: BuildState; fitScore: number }>>([])
+  const [selectedSynthesisRank, setSelectedSynthesisRank] = useState(0)
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [buildName, setBuildName] = useState('Моята Сглобка')
   const [summarySheetOpen, setSummarySheetOpen] = useState(false)
@@ -259,8 +1074,11 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
   const lastLoadedBuildRef = useRef<string | null>(null)
   const lastAddedComponentRef = useRef<string | null>(null)
   const [buildUseCase, setBuildUseCase] = useState<BuildUseCase>('gaming')
-  const [buildPriority, setBuildPriority] = useState<BuildPriority>('balanced')
-  const [preferredBrand, setPreferredBrand] = useState<string>('all')
+  const [customBudgetInput, setCustomBudgetInput] = useState('1550')
+  /** От началната страница: quickBudget=1 — панелът „синтез“ е скрит и се зарежда директно най-добрият вариант (без карти „Топ предложения“). */
+  const fromHomeBudgetShortcut = searchParams.get('quickBudget') === '1'
+  const [synthesisPanelRevealed, setSynthesisPanelRevealed] = useState(false)
+  const hideSynthesisSettings = fromHomeBudgetShortcut && !synthesisPanelRevealed
 
   // Sort categories by order
   const sortedCategories = useMemo(() => {
@@ -270,11 +1088,6 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
       return orderA - orderB
     })
   }, [categories])
-
-  const availableBrandOptions = useMemo(
-    () => brands.filter((brand) => components.some((component) => component.brand?.id === brand.id)),
-    [brands, components]
-  )
 
   const normalizeAllocations = useCallback((allocations: Record<string, number>) => {
     const total = Object.values(allocations).reduce((sum, value) => sum + value, 0)
@@ -301,115 +1114,8 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
 
   const estimatedWattage = useMemo(() => estimateBuildWattage(build), [build])
 
-  const cpuPerformance = useMemo(() => {
-    if (!build.cpu) return { gaming: 0, productivity: 0 }
-
-    const matched = matchBenchmark(cpuBenchmarks, build.cpu)
-    if (matched) return matched
-
-    const cores = asFiniteNumber(build.cpu.specs?.cores, 4)
-    const threads = asFiniteNumber(build.cpu.specs?.threads, Math.max(cores, 4))
-    const boost = asFiniteNumber(build.cpu.specs?.boost_clock, 4)
-    const base = asFiniteNumber(build.cpu.specs?.base_clock, 3.2)
-    const cache = parseCacheAmount(build.cpu.specs?.cache)
-    const architecture = normalizeName(build.cpu.specs?.architecture)
-
-    let archFactor = 1
-    if (architecture.includes('zen 5')) archFactor = 1.1
-    else if (architecture.includes('zen 4')) archFactor = 1.05
-    else if (architecture.includes('zen 2')) archFactor = 0.88
-
-    const gaming = clampScore(
-      ((cores / 8) * 26 + (threads / 16) * 16 + (boost / 5.8) * 34 + (base / 4.2) * 10 + (cache / 96) * 14) *
-        archFactor,
-      12,
-      100
-    )
-    const productivity = clampScore(
-      ((cores / 16) * 38 + (threads / 32) * 26 + (boost / 5.8) * 18 + (cache / 96) * 10) *
-        archFactor,
-      12,
-      100
-    )
-
-    return { gaming, productivity }
-  }, [build.cpu])
-
-  const gpuPerformance = useMemo(() => {
-    if (!build.gpu) return { gaming: 0, creator: 0 }
-
-    const matched = matchBenchmark(gpuBenchmarks, build.gpu)
-    if (matched) return matched
-
-    const vram = asFiniteNumber(build.gpu.specs?.vram, 8)
-    const busWidth = asFiniteNumber(build.gpu.specs?.bus_width, 128)
-    const tdp = asFiniteNumber(build.gpu.specs?.tdp, 150)
-    const rawCuda = asFiniteNumber(build.gpu.specs?.cuda_cores, 0)
-    const rawStream = asFiniteNumber(build.gpu.specs?.stream_processors, 0)
-    const normalizedShaders = rawCuda > 0 ? rawCuda : rawStream * 0.42
-
-    const gaming = clampScore(
-      (normalizedShaders / 18000) * 50 +
-        (vram / 24) * 22 +
-        (busWidth / 384) * 18 +
-        (tdp / 420) * 10,
-      10,
-      100
-    )
-    const creator = clampScore(gaming * 0.94 + (vram / 24) * 10, 10, 100)
-
-    return { gaming, creator }
-  }, [build.gpu])
-
-  const ramPerformance = useMemo(() => {
-    if (!build.ram) return 0
-    const capacity = asFiniteNumber(build.ram.specs?.capacity, 8)
-    const speed = asFiniteNumber(build.ram.specs?.speed, 3200)
-    const isDdr5 = normalizeName(build.ram.specs?.type).includes('ddr5')
-    return clampScore(
-      (capacity / 32) * 55 + (speed / 6400) * 35 + (isDdr5 ? 8 : 0),
-      10,
-      100
-    )
-  }, [build.ram])
-
-  const storagePerformance = useMemo(() => {
-    if (build.storage.length === 0) return 0
-    const speeds = build.storage.map((s) => asFiniteNumber(s.specs?.read_speed, 550))
-    const fastest = Math.max(...speeds)
-    return clampScore((fastest / 7500) * 100, 12, 100)
-  }, [build.storage])
-
-  // Calculate performance score (0-100)
-  const performanceScore = useMemo(() => {
-    const weightedParts: Array<{ score: number; weight: number }> = []
-
-    if (build.gpu) weightedParts.push({ score: gpuPerformance.gaming, weight: 0.44 })
-    if (build.cpu) weightedParts.push({ score: cpuPerformance.gaming * 0.62 + cpuPerformance.productivity * 0.38, weight: 0.34 })
-    if (build.ram) weightedParts.push({ score: ramPerformance, weight: 0.12 })
-    if (build.storage.length > 0) weightedParts.push({ score: storagePerformance, weight: 0.07 })
-    if (build.cooling) weightedParts.push({ score: 92, weight: 0.03 })
-
-    if (weightedParts.length === 0) return 0
-
-    const score =
-      weightedParts.reduce((sum, part) => sum + part.score * part.weight, 0) /
-      weightedParts.reduce((sum, part) => sum + part.weight, 0)
-
-    const populatedSlots = [
-      build.cpu,
-      build.gpu,
-      build.ram,
-      build.motherboard,
-      build.psu,
-      build.case,
-      build.cooling,
-      build.storage.length > 0,
-    ].filter(Boolean).length
-
-    const completionFactor = 0.58 + (Math.min(populatedSlots, 8) / 8) * 0.42
-    return clampScore(score * completionFactor, 0, 100)
-  }, [build, gpuPerformance, cpuPerformance, ramPerformance, storagePerformance])
+  const { cpuPerformance, gpuPerformance, ramPerformance, storagePerformance, performanceScore } =
+    useMemo(() => analyzeBuildPerformance(build), [build])
 
   const getPerformanceTier = (score: number) => {
     if (score >= 78) return { label: 'Върхов Клас', color: 'text-purple-400', bgColor: 'bg-purple-500/20' }
@@ -596,23 +1302,21 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
 
   const handleClearBuild = useCallback(() => {
     setBuild(initialBuildState)
+    setSynthesisResults([])
+    setSelectedSynthesisRank(0)
     toast.info('Сглобката е изчистена')
   }, [])
 
   // Handle preset builds based on budget - WITH COMPATIBILITY CHECK
-  const handlePresetBuild = useCallback((preset: string) => {
-    const budgets: Record<string, { target: number; max: number; label: string }> = {
-      'entry': { target: 900, max: 1000, label: 'Бюджетен' },
-      'mid': { target: 1500, max: 1650, label: 'Среден Клас' },
-      'high-end': { target: 2500, max: 2700, label: 'Висок Клас' },
+  const handlePresetBuild = useCallback((input: BuilderPresetInput, opts?: BuilderPresetBuildOptions) => {
+    const budgets: Record<BuilderBudgetPreset, { target: number; max: number; label: string }> = {
+      entry: { target: 1050, max: Math.round(1050 * DEFAULT_BUDGET_MAX_FACTOR), label: 'Бюджетен' },
+      mid: { target: 1550, max: Math.round(1550 * DEFAULT_BUDGET_MAX_FACTOR), label: 'Среден Клас' },
+      'high-end': { target: 2600, max: Math.round(2600 * DEFAULT_BUDGET_MAX_FACTOR), label: 'Висок Клас' },
     }
-    
-    const budget = budgets[preset] || budgets['mid']
-    const newBuild: BuildState = { ...initialBuildState }
-    
-    // Allocate budget percentages based on preset tier
-    const allocations: Record<string, Record<string, number>> = {
-      'entry': {
+
+    const allocations: Record<BuilderBudgetPreset, Record<string, number>> = {
+      entry: {
         gpu: 0.30,
         cpu: 0.22,
         motherboard: 0.15,
@@ -622,7 +1326,7 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
         case: 0.03,
         cooling: 0.02,
       },
-      'mid': {
+      mid: {
         gpu: 0.35,
         cpu: 0.20,
         motherboard: 0.12,
@@ -643,8 +1347,38 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
         cooling: 0.03,
       },
     }
-    
-    const baseAllocations = allocations[preset] || allocations['mid']
+
+    let budget: { target: number; max: number; label: string }
+    let allocationKey: BuilderBudgetPreset
+
+    if (typeof input === 'object' && input !== null && 'customTargetEur' in input) {
+      const raw = Number(String(input.customTargetEur).replace(',', '.'))
+      if (!Number.isFinite(raw)) {
+        toast.error('Невалиден бюджет.')
+        return
+      }
+      const target = Math.min(20000, Math.max(400, Math.round(raw)))
+      budget = {
+        target,
+        max: Math.round(target * DEFAULT_BUDGET_MAX_FACTOR),
+        label: `По бюджет ${target} €`,
+      }
+      allocationKey = allocationTierForTargetEur(target)
+    } else {
+      const presetKey =
+        input === 'entry' || input === 'mid' || input === 'high-end' ? input : 'mid'
+      budget = budgets[presetKey]
+      allocationKey = presetKey
+    }
+
+    if (opts?.skipVariantCards) {
+      budget = {
+        ...budget,
+        max: Math.round(budget.target * QUICK_START_BUDGET_MAX_FACTOR),
+      }
+    }
+
+    const baseAllocations = allocations[allocationKey]
     const useCaseAdjustments: Record<BuildUseCase, Record<string, number>> = {
       gaming: { gpu: 0.08, cpu: 0.04, ram: 0.01, storage: -0.03, case: -0.02, cooling: 0.01, motherboard: 0.01, psu: 0 },
       office: { gpu: -0.1, cpu: 0.03, ram: 0.02, storage: 0.03, psu: 0.02, case: 0, cooling: 0, motherboard: 0 },
@@ -659,223 +1393,97 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
         ])
       ) as Record<string, number>
     )
-    const targetBudget = budget.target
 
-    const matchesBrandPreference = (component: Component) =>
-      preferredBrand === 'all' || component.brand?.slug === preferredBrand
+    const preferMostExpensive = allocationKey === 'high-end'
 
-    const matchesEfficiencyPreference = (component: Component) => {
-      if (buildPriority !== 'efficiency') return true
-      const categorySlug = component.category?.slug
-      switch (categorySlug) {
-        case 'cpu':
-          return (component.specs?.tdp || 0) <= 120
-        case 'gpu':
-          return (component.specs?.tdp || 0) <= 260
-        case 'psu':
-          return ['80+ Gold', '80+ Platinum', '80+ Titanium'].includes(component.specs?.efficiency || '')
-        case 'cooling':
-          return String(component.specs?.type || '').toLowerCase().includes('air')
-        default:
-          return true
-      }
-    }
+    const rankPlans: SynthesisRanks[] = [
+      { cpuRank: 0, gpuRank: 0 },
+      { cpuRank: 1, gpuRank: 0 },
+      { cpuRank: 0, gpuRank: 1 },
+      { cpuRank: 2, gpuRank: 0 },
+      { cpuRank: 0, gpuRank: 2 },
+      { cpuRank: 1, gpuRank: 1 },
+    ]
 
-    const withPriority = (items: Component[], categorySlug: string) => {
-      let pool = items.filter((item) => item.in_stock)
+    const seenSig = new Set<string>()
+    const variantBuilds: BuildState[] = []
 
-      if (buildPriority === 'brand' && preferredBrand !== 'all') {
-        const preferredPool = pool.filter(matchesBrandPreference)
-        if (preferredPool.length > 0) pool = preferredPool
-      }
-
-      if (buildPriority === 'efficiency') {
-        const efficientPool = pool.filter(matchesEfficiencyPreference)
-        if (efficientPool.length > 0) pool = efficientPool
-      }
-
-      if (buildUseCase === 'office' && categorySlug === 'gpu') {
-        pool = [...pool].sort((a, b) => a.price - b.price)
-      }
-
-      return pool
-    }
-
-    const getTargetPrice = (categoryKey: string, multiplier = 1) => {
-      const base = targetBudget * (tierAllocations[categoryKey] || 0)
-      if (buildPriority === 'performance') return base * 1.12 * multiplier
-      if (buildPriority === 'budget') return base * 0.86 * multiplier
-      return base * multiplier
-    }
-
-    const getMaxPrice = (categoryKey: string, multiplier = 1.25) => {
-      const base = targetBudget * (tierAllocations[categoryKey] || 0)
-      if (buildPriority === 'performance') return base * 1.55 * multiplier
-      if (buildPriority === 'budget') return base * 1.05 * multiplier
-      return base * multiplier
-    }
-
-    // Step 1: Pick CPU first
-    const selectedCpu = pickRandomNearPrice(
-      withPriority(components.filter((c) => c.category?.slug === 'cpu'), 'cpu'),
-      getTargetPrice('cpu'),
-      getMaxPrice('cpu')
-    ) ?? pickRandom(withPriority(components.filter((c) => c.category?.slug === 'cpu'), 'cpu')) ?? null
-    
-    if (selectedCpu) {
-      newBuild.cpu = selectedCpu
-      const cpuSocket = selectedCpu.specs?.socket
-      
-      // Step 2: Pick motherboard that matches CPU socket
-      const selectedMb = pickRandomNearPrice(
-        withPriority(components.filter((c) => c.category?.slug === 'motherboard'), 'motherboard'),
-        getTargetPrice('motherboard'),
-        getMaxPrice('motherboard'),
-        (c) => !cpuSocket || c.specs?.socket === cpuSocket
-      ) ?? pickRandom(
-        withPriority(components.filter((c) =>
-          c.category?.slug === 'motherboard' &&
-          (!cpuSocket || c.specs?.socket === cpuSocket)
-        ), 'motherboard')
-      ) ?? null
-      
-      if (selectedMb) {
-        newBuild.motherboard = selectedMb
-        const mbMemoryType = selectedMb.specs?.memory_type
-        
-        // Step 3: Pick RAM that matches motherboard memory type
-        newBuild.ram = pickRandomNearPrice(
-          withPriority(components.filter((c) => c.category?.slug === 'ram'), 'ram'),
-          getTargetPrice('ram'),
-          getMaxPrice('ram'),
-          (c) => !mbMemoryType || c.specs?.type === mbMemoryType
-        ) ?? pickRandom(
-          withPriority(components.filter((c) =>
-            c.category?.slug === 'ram' &&
-            (!mbMemoryType || c.specs?.type === mbMemoryType)
-          ), 'ram')
-        ) ?? null
-      }
-    }
-    
-    // Step 4: Pick GPU (no compatibility constraints)
-    newBuild.gpu = pickRandomNearPrice(
-      withPriority(components.filter((c) => c.category?.slug === 'gpu'), 'gpu'),
-      getTargetPrice('gpu'),
-      getMaxPrice('gpu')
-    ) ?? pickRandom(withPriority(components.filter((c) => c.category?.slug === 'gpu'), 'gpu')) ?? null
-    
-    // Step 5: Pick storage
-    const selectedStorage = pickRandomNearPrice(
-      withPriority(components.filter((c) => c.category?.slug === 'storage'), 'storage'),
-      getTargetPrice('storage'),
-      getMaxPrice('storage', 1.35)
-    ) ?? pickRandom(withPriority(components.filter((c) => c.category?.slug === 'storage'), 'storage')) ?? null
-    
-    newBuild.storage = selectedStorage ? [selectedStorage] : []
-    
-    const estimatedWatt = estimateBuildWattage(newBuild)
-
-    newBuild.psu = pickRandomNearPrice(
-      withPriority(components.filter((c) => c.category?.slug === 'psu'), 'psu'),
-      getTargetPrice('psu'),
-      getMaxPrice('psu', 1.35),
-      (c) => (c.specs?.wattage || 0) >= estimatedWatt * 1.15
-    ) ?? pickRandomNearPrice(
-      withPriority(components.filter((c) => c.category?.slug === 'psu'), 'psu'),
-      getTargetPrice('psu'),
-      getMaxPrice('psu', 1.35),
-      (c) => (c.specs?.wattage || 0) >= estimatedWatt
-    ) ?? pickRandom(
-      withPriority(components.filter((c) => c.category?.slug === 'psu'), 'psu')
-    ) ?? null
-    
-    // Step 7: Pick case that supports motherboard form factor
-    const mbFormFactor = newBuild.motherboard?.specs?.form_factor
-    
-    // Helper to check if case supports motherboard form factor
-    const caseSupportsMotherboard = (caseComponent: Component, formFactor: string | undefined): boolean => {
-      if (!formFactor) return true
-      const supported = caseComponent.specs?.motherboard_support || []
-      const caseFormFactor = caseComponent.specs?.form_factor || ''
-      
-      // If motherboard_support array exists and has items, check it
-      if (Array.isArray(supported) && supported.length > 0) {
-        return supported.includes(formFactor)
-      }
-      
-      // Otherwise, use case form factor hierarchy:
-      // Full-Tower supports all (ATX, Micro-ATX, Mini-ITX, E-ATX)
-      // Mid-Tower supports ATX, Micro-ATX, Mini-ITX
-      // Mini-Tower supports Micro-ATX, Mini-ITX (NOT ATX!)
-      // Mini-ITX supports Mini-ITX only
-      const formFactorHierarchy: Record<string, string[]> = {
-        'Full-Tower': ['E-ATX', 'ATX', 'Micro-ATX', 'Mini-ITX'],
-        'Mid-Tower': ['ATX', 'Micro-ATX', 'Mini-ITX'],
-        'Mini-Tower': ['Micro-ATX', 'Mini-ITX'], // Does NOT support ATX!
-        'Mini-ITX': ['Mini-ITX'],
-      }
-      
-      const supportedFactors = formFactorHierarchy[caseFormFactor] || []
-      return supportedFactors.includes(formFactor)
-    }
-    
-    const caseCandidates = components
-      .filter(c => {
-        if (c.category?.slug !== 'case' || !c.in_stock) return false
-        if (buildPriority === 'brand' && preferredBrand !== 'all' && !matchesBrandPreference(c)) return false
-        return caseSupportsMotherboard(c, mbFormFactor)
-      })
-    
-    newBuild.case = pickRandomNearPrice(
-      caseCandidates,
-      getTargetPrice('case'),
-      getMaxPrice('case', 1.5)
-    ) ?? pickRandom(caseCandidates) ?? null
-    
-    // Step 8: Pick cooling
-    newBuild.cooling = pickRandomNearPrice(
-      withPriority(components.filter((c) => c.category?.slug === 'cooling'), 'cooling'),
-      getTargetPrice('cooling'),
-      getMaxPrice('cooling', 1.5)
-    ) ?? pickRandom(withPriority(components.filter((c) => c.category?.slug === 'cooling'), 'cooling')) ?? null
-
-    const totalPickedPrice =
-      (newBuild.cpu?.price || 0) +
-      (newBuild.gpu?.price || 0) +
-      (newBuild.ram?.price || 0) +
-      (newBuild.motherboard?.price || 0) +
-      (newBuild.psu?.price || 0) +
-      (newBuild.case?.price || 0) +
-      (newBuild.cooling?.price || 0) +
-      newBuild.storage.reduce((sum, item) => sum + item.price, 0)
-
-    const maxGpuPrice = Math.max(0, budget.max - (totalPickedPrice - (newBuild.gpu?.price || 0)))
-    if (newBuild.gpu && maxGpuPrice > 0 && buildPriority === 'performance') {
-      const betterGpu = pickRandomNearPrice(
-        withPriority(components.filter((c) => c.category?.slug === 'gpu' && c.price <= maxGpuPrice), 'gpu'),
-        Math.min(maxGpuPrice, targetBudget * tierAllocations.gpu),
-        maxGpuPrice
+    for (const ranks of rankPlans) {
+      if (variantBuilds.length >= 3) break
+      const b = synthesizeBuildWithRanks(
+        components,
+        budget,
+        tierAllocations,
+        buildUseCase,
+        ranks,
+        preferMostExpensive
       )
-      if (betterGpu) newBuild.gpu = betterGpu
+      const sig = buildComponentSignature(b)
+      if (seenSig.has(sig)) continue
+      seenSig.add(sig)
+      variantBuilds.push(b)
     }
-    
-    // Count how many components were added
+
+    const scored = variantBuilds.map((b) => ({
+      build: b,
+      fitScore: totalBuildFitScore(b, buildUseCase),
+      totalPrice: totalBuildPriceState(b),
+    }))
+
+    if (preferMostExpensive) {
+      scored.sort((a, b) => b.totalPrice - a.totalPrice || b.fitScore - a.fitScore)
+    } else {
+      scored.sort((a, b) => b.fitScore - a.fitScore)
+    }
+
+    const top = scored.slice(0, 3).map(({ build, fitScore }) => ({ build, fitScore }))
+    if (opts?.skipVariantCards) {
+      setSynthesisResults([])
+    } else {
+      setSynthesisResults(top)
+    }
+    setSelectedSynthesisRank(0)
+    const finalBuild = top[0]?.build ?? initialBuildState
+    setBuild(finalBuild)
+
+    const useCaseLabel =
+      buildUseCaseOptions.find((o) => o.value === buildUseCase)?.label ?? buildUseCase
+
     const addedCount = [
-      newBuild.gpu, newBuild.cpu, newBuild.motherboard, newBuild.ram,
-      newBuild.storage.length > 0, newBuild.psu, newBuild.case, newBuild.cooling
+      finalBuild.gpu,
+      finalBuild.cpu,
+      finalBuild.motherboard,
+      finalBuild.ram,
+      finalBuild.storage.length > 0,
+      finalBuild.psu,
+      finalBuild.case,
+      finalBuild.cooling,
     ].filter(Boolean).length
-    
-    setBuild(newBuild)
-    
-    if (addedCount >= 6) {
-      toast.success(`${budget.label} ${buildUseCase} конфигурация е създадена!`)
+
+    if (top.length === 0) {
+      toast.error('Не бяха намерени налични компоненти')
+    } else if (opts?.skipVariantCards && addedCount === 8) {
+      toast.success(`${budget.label} — сглобката за „${useCaseLabel}“ е готова (най-добрият вариант).`)
+    } else if (opts?.skipVariantCards && addedCount >= 6) {
+      toast.warning(
+        `Най-добрият вариант е зареден (${addedCount}/8 слота) — провери каталога за липсващи части.`
+      )
+    } else if (opts?.skipVariantCards && addedCount > 0) {
+      toast.warning(`Частична сглобка (${addedCount} компонента) — допълни ръчно.`)
+    } else if (addedCount === 8) {
+      toast.success(
+        `${budget.label} — ${top.length} топ варианта за „${useCaseLabel}“. Избери от картите „Топ предложения“ по-долу.`
+      )
+    } else if (addedCount >= 6) {
+      toast.warning(
+        `Генерирани ${top.length} варианта; най-добрият има ${addedCount}/8 слота — провери каталога.`
+      )
     } else if (addedCount > 0) {
-      toast.success(`Добавени са ${addedCount} компонента. Добави останалите ръчно.`)
+      toast.warning(`Генерирани ${top.length} варианта с ${addedCount} компонента — допълни ръчно.`)
     } else {
       toast.error('Не бяха намерени налични компоненти')
     }
-  }, [buildPriority, buildUseCase, components, normalizeAllocations, preferredBrand])
+  }, [buildUseCase, components, normalizeAllocations])
 
   const handleAutoGenerate = useCallback(() => {
     const r = Math.random()
@@ -883,11 +1491,32 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
     handlePresetBuild(preset)
   }, [handlePresetBuild])
 
+  const handleCustomBudgetGenerate = useCallback(() => {
+    const raw = Number(String(customBudgetInput).replace(',', '.'))
+    if (!Number.isFinite(raw)) {
+      toast.error('Въведи число за бюджета.')
+      return
+    }
+    handlePresetBuild({ customTargetEur: raw })
+  }, [customBudgetInput, handlePresetBuild])
+
   useEffect(() => {
     if (searchParams.get('build')) return
+    const skipVariantCards = searchParams.get('quickBudget') === '1'
+    const budgetParam = searchParams.get('budget')
+    if (budgetParam) {
+      const n = Number(budgetParam.replace(',', '.'))
+      if (Number.isFinite(n) && n >= 400) {
+        handlePresetBuild({ customTargetEur: n }, { skipVariantCards })
+      }
+      return
+    }
     const preset = searchParams.get('preset')
     if (preset) {
-      handlePresetBuild(preset)
+      handlePresetBuild(
+        preset === 'entry' || preset === 'mid' || preset === 'high-end' ? preset : 'mid',
+        { skipVariantCards }
+      )
     }
   }, [searchParams, handlePresetBuild])
 
@@ -1190,8 +1819,6 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
       const payload = {
         name: buildName,
         useCase: buildUseCase,
-        priority: buildPriority,
-        preferredBrand,
         totalPrice,
         estimatedWattage,
         performanceScore,
@@ -1210,9 +1837,7 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
 
       const textContent = [
         `Име: ${buildName}`,
-        `Тип конфигурация: ${buildUseCase}`,
-        `Приоритет: ${buildPriority}`,
-        `Предпочитана марка: ${preferredBrand === 'all' ? 'Няма' : preferredBrand}`,
+        `Тип конфигурация: ${buildUseCaseOptions.find((o) => o.value === buildUseCase)?.label ?? buildUseCase}`,
         `Обща цена: ${formatPrice(totalPrice)}`,
         `Консумация: ${estimatedWattage}W`,
         `Производителност: ${performanceScore}/100`,
@@ -1244,13 +1869,11 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
     [
       build,
       buildName,
-      buildPriority,
       buildUseCase,
       compatibilityIssues,
       estimatedWattage,
       filledSlots,
       performanceScore,
-      preferredBrand,
       totalPrice,
     ]
   )
@@ -1272,18 +1895,10 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
           <CardTitle className="text-lg">Обобщение</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-2 text-sm">
-            <div className="rounded-lg bg-muted/40 p-2">
-              <div className="text-muted-foreground">Тип</div>
-              <div className="font-medium">
-                {buildUseCaseOptions.find((option) => option.value === buildUseCase)?.label}
-              </div>
-            </div>
-            <div className="rounded-lg bg-muted/40 p-2">
-              <div className="text-muted-foreground">Приоритет</div>
-              <div className="font-medium">
-                {buildPriorityOptions.find((option) => option.value === buildPriority)?.label}
-              </div>
+          <div className="rounded-lg bg-muted/40 p-2 text-sm">
+            <div className="text-muted-foreground">Тип конфигурация</div>
+            <div className="font-medium">
+              {buildUseCaseOptions.find((option) => option.value === buildUseCase)?.label}
             </div>
           </div>
           <div className="flex items-center justify-between">
@@ -1513,12 +2128,26 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
               Експорт на конфигурация
             </Button>
 
+            {hideSynthesisSettings ? (
+              <div className="rounded-xl border border-border/60 bg-card/40 px-4 py-3 text-sm text-muted-foreground">
+                <button
+                  type="button"
+                  className="text-primary underline underline-offset-2 hover:text-primary/90"
+                  onClick={() => setSynthesisPanelRevealed(true)}
+                >
+                  Покажи настройки за синтезиране
+                </button>
+                <span className="ml-2">(тип конфигурация, ръчен бюджет)</span>
+              </div>
+            ) : null}
+
+            {!hideSynthesisSettings ? (
             <Card className="border-border/60 bg-card/75">
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">Настройки за синтезиране</CardTitle>
               </CardHeader>
-              <CardContent className="grid gap-4 md:grid-cols-3">
-                <div className="space-y-2">
+              <CardContent className="space-y-4">
+                <div className="space-y-2 max-w-md">
                   <Label>Тип конфигурация</Label>
                   <Select value={buildUseCase} onValueChange={(value: BuildUseCase) => setBuildUseCase(value)}>
                     <SelectTrigger>
@@ -1533,43 +2162,145 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
-                  <Label>Приоритет</Label>
-                  <Select value={buildPriority} onValueChange={(value: BuildPriority) => setBuildPriority(value)}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {buildPriorityOptions.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Предпочитана марка</Label>
-                  <Select value={preferredBrand} onValueChange={setPreferredBrand}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Без предпочитание</SelectItem>
-                      {availableBrandOptions.map((brand) => (
-                        <SelectItem key={brand.id} value={brand.slug}>
-                          {brand.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="md:col-span-3 rounded-xl border border-border/60 bg-muted/30 p-3 text-sm text-muted-foreground">
-                  Автоматичното генериране вече взема предвид типа конфигурация, приоритета и
-                  предпочитаната марка. Така покриваш по-точно изискването от дипломната тема.
+                <div className="space-y-3 rounded-xl border border-border/60 bg-muted/30 p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+                    <div className="min-w-[140px] flex-1 space-y-2">
+                      <Label htmlFor="custom-budget-eur">Бюджет (€)</Label>
+                      <Input
+                        id="custom-budget-eur"
+                        type="text"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        placeholder="напр. 1380"
+                        value={customBudgetInput}
+                        onChange={(e) => setCustomBudgetInput(e.target.value)}
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      className="w-full gap-2 bg-primary text-primary-foreground sm:w-auto"
+                      onClick={handleCustomBudgetGenerate}
+                    >
+                      <Wand2 className="h-4 w-4" />
+                      Синтезирай топ 3 варианта
+                    </Button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-1"
+                      onClick={() => {
+                        setCustomBudgetInput('1050')
+                        handlePresetBuild('entry')
+                      }}
+                    >
+                      Бюджетен (1050 €)
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-1"
+                      onClick={() => {
+                        setCustomBudgetInput('1550')
+                        handlePresetBuild('mid')
+                      }}
+                    >
+                      Среден (1550 €)
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-1"
+                      onClick={() => {
+                        setCustomBudgetInput('2600')
+                        handlePresetBuild('high-end')
+                      }}
+                    >
+                      Висок (2600 €)
+                    </Button>
+                  </div>
                 </div>
               </CardContent>
             </Card>
+            ) : null}
+
+            {synthesisResults.length > 0 ? (
+              <Card className="border-primary/35 bg-gradient-to-br from-primary/8 via-card to-card shadow-sm">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Trophy className="h-5 w-5 text-primary shrink-0" />
+                    Топ предложения
+                  </CardTitle>
+                  <p className="text-sm text-muted-foreground font-normal leading-relaxed">
+                    {synthesisResults.length} варианта за „
+                    {buildUseCaseOptions.find((o) => o.value === buildUseCase)?.label}“, подредени по оценка за този тип.
+                    Избери картата и натисни „Използвай“, за да я заредиш в сглобката.
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {synthesisResults.map((row, idx) => (
+                      <div
+                        key={`${buildComponentSignature(row.build)}-${idx}`}
+                        className={cn(
+                          'flex flex-col rounded-xl border p-4 gap-3 transition-all',
+                          selectedSynthesisRank === idx
+                            ? 'border-primary bg-primary/10 ring-2 ring-primary/40'
+                            : 'border-border/60 bg-card/80'
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-foreground">Вариант {idx + 1}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              Оценка {Math.round(row.fitScore)} · Обща сума{' '}
+                              {formatPrice(totalBuildPriceState(row.build))}
+                            </p>
+                          </div>
+                          {idx === 0 ? (
+                            <Badge className="shrink-0 bg-primary text-primary-foreground">Най-висок</Badge>
+                          ) : null}
+                        </div>
+                        <ul className="text-xs text-muted-foreground space-y-1 flex-1 min-h-0">
+                          {row.build.cpu ? (
+                            <li className="line-clamp-2">
+                              <span className="text-foreground/90">CPU:</span> {row.build.cpu.name}
+                            </li>
+                          ) : null}
+                          {row.build.gpu ? (
+                            <li className="line-clamp-2">
+                              <span className="text-foreground/90">GPU:</span> {row.build.gpu.name}
+                            </li>
+                          ) : null}
+                          {row.build.ram ? (
+                            <li className="line-clamp-2">
+                              <span className="text-foreground/90">RAM:</span> {row.build.ram.name}
+                            </li>
+                          ) : null}
+                        </ul>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="w-full mt-auto"
+                          variant={selectedSynthesisRank === idx ? 'default' : 'outline'}
+                          onClick={() => {
+                            setBuild(row.build)
+                            setSelectedSynthesisRank(idx)
+                            toast.success(`Зареден е вариант ${idx + 1}`)
+                          }}
+                        >
+                          Използвай този вариант
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
 
             {sortedCategories.map((category) => {
               const config = categoryConfig[category.slug]

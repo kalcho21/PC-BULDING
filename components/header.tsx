@@ -205,10 +205,20 @@ export function Header() {
             <ThemePicker />
 
             {user ? (
-              <div className="hidden sm:flex items-center gap-2 max-w-[200px]">
-                <span className="text-sm text-foreground truncate" title={user.email}>
+              <div className="hidden sm:flex items-center gap-2 max-w-[240px]">
+                <Link
+                  href="/profile"
+                  className="text-sm text-foreground truncate hover:text-primary hover:underline"
+                  title="Моят профил"
+                >
                   {user.displayName || user.email}
-                </span>
+                </Link>
+                <Button variant="ghost" size="sm" className="shrink-0 gap-1 rounded-xl" asChild>
+                  <Link href="/profile">
+                    <UserIcon className="h-4 w-4" />
+                    <span className="hidden xl:inline">Профил</span>
+                  </Link>
+                </Button>
                 <Button
                   variant="default"
                   size="sm"
@@ -282,6 +292,12 @@ export function Header() {
                         <p className="px-4 text-sm text-muted-foreground truncate">
                           {user.displayName || user.email}
                         </p>
+                        <Link href="/profile" onClick={() => setMobileMenuOpen(false)}>
+                          <Button variant="outline" className="mb-2 w-full gap-2">
+                            <UserIcon className="h-4 w-4" />
+                            Профил
+                          </Button>
+                        </Link>
                         <Button
                           variant="default"
                           className="w-full gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
