@@ -5,6 +5,10 @@
 
 import type { BuildState, Component } from '@/lib/types'
 
+/** Референтни gaming индекси за FPS модула: среден клас (примерно Ryzen 5 5600X + RTX 3060). */
+export const FPS_REF_CPU_GAMING = 58
+export const FPS_REF_GPU_GAMING = 50
+
 export const cpuBenchmarks: Record<string, { gaming: number; productivity: number }> = {
   'Ryzen 9 9950X3D': { gaming: 100, productivity: 98 },
   'Ryzen 9 9950X': { gaming: 94, productivity: 100 },
@@ -49,6 +53,27 @@ export const gpuBenchmarks: Record<string, { gaming: number; creator: number }> 
   'RTX 4070': { gaming: 58, creator: 60 },
   'RTX 4060 Ti': { gaming: 46, creator: 48 },
   'RTX 4060': { gaming: 38, creator: 40 },
+  'RTX 3060 Ti': { gaming: 52, creator: 54 },
+  'RTX 3060': { gaming: 50, creator: 52 },
+  'RTX 3050': { gaming: 28, creator: 30 },
+  'RTX 2060': { gaming: 34, creator: 36 },
+  'GTX 1660 Ti': { gaming: 24, creator: 26 },
+  'GTX 1660 SUPER': { gaming: 22, creator: 24 },
+  'GTX 1650': { gaming: 15, creator: 16 },
+  'Intel ARC A770': { gaming: 42, creator: 45 },
+  'Intel ARC A750': { gaming: 36, creator: 40 },
+  'Intel ARC A580': { gaming: 30, creator: 34 },
+  'Intel ARC A380': { gaming: 14, creator: 15 },
+  'ARC A770': { gaming: 42, creator: 45 },
+  'ARC A750': { gaming: 36, creator: 40 },
+  'ARC A580': { gaming: 30, creator: 34 },
+  'ARC A380': { gaming: 14, creator: 15 },
+  'RX 6650 XT': { gaming: 46, creator: 44 },
+  'RX 6600 XT': { gaming: 42, creator: 40 },
+  'RX 6600': { gaming: 38, creator: 36 },
+  'RX 6500 XT': { gaming: 18, creator: 16 },
+  'RX 5700 XT': { gaming: 40, creator: 38 },
+  'RX 580': { gaming: 22, creator: 20 },
   'RX 9070 XT': { gaming: 78, creator: 72 },
   'RX 9070': { gaming: 68, creator: 64 },
   'RX 7900 XTX': { gaming: 82, creator: 74 },

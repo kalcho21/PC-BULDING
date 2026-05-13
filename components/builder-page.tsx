@@ -18,6 +18,7 @@ import {
   normalizeName,
   parseCacheAmount,
 } from '@/lib/build-performance-score'
+import { estimateBuildGameFps1080p } from '@/lib/game-fps-estimate'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -576,25 +577,6 @@ function ensureCompleteBuild(
   return b
 }
 
-// FPS estimates for popular games
-const gameFpsEstimates: Record<string, { base1080p: number; base1440p: number; base4k: number }> = {
-  'CS2': { base1080p: 400, base1440p: 280, base4k: 150 },
-  'Valorant': { base1080p: 450, base1440p: 350, base4k: 200 },
-  'Fortnite': { base1080p: 240, base1440p: 165, base4k: 90 },
-  'GTA V': { base1080p: 140, base1440p: 100, base4k: 55 },
-  'Warzone': { base1080p: 180, base1440p: 130, base4k: 70 },
-  'Cyberpunk 2077': { base1080p: 100, base1440p: 65, base4k: 35 },
-}
-
-const gameProfiles = {
-  'CS2': { base: 950, gpuWeight: 0.42, cpuWeight: 0.48, ramWeight: 0.1, vramMin: 6 },
-  'Valorant': { base: 1000, gpuWeight: 0.4, cpuWeight: 0.5, ramWeight: 0.1, vramMin: 6 },
-  'Fortnite': { base: 420, gpuWeight: 0.6, cpuWeight: 0.28, ramWeight: 0.12, vramMin: 8 },
-  'GTA V': { base: 260, gpuWeight: 0.55, cpuWeight: 0.35, ramWeight: 0.1, vramMin: 6 },
-  'Warzone': { base: 280, gpuWeight: 0.68, cpuWeight: 0.22, ramWeight: 0.1, vramMin: 10 },
-  'Cyberpunk 2077': { base: 190, gpuWeight: 0.75, cpuWeight: 0.15, ramWeight: 0.1, vramMin: 12 },
-} as const
-
 function psuEfficiencyTierScore(eff: string): number {
   const e = eff.toLowerCase()
   if (e.includes('titanium')) return 100
@@ -1077,8 +1059,11 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
   const [customBudgetInput, setCustomBudgetInput] = useState('1550')
   /** От началната страница: quickBudget=1 — панелът „синтез“ е скрит и се зарежда директно най-добрият вариант (без карти „Топ предложения“). */
   const fromHomeBudgetShortcut = searchParams.get('quickBudget') === '1'
+  /** Заредена запазена сглобка от URL (?build=...) — без панел синтез, докато не се покаже ръчно. */
+  const openedSavedBuildFromUrl = Boolean(searchParams.get('build'))
   const [synthesisPanelRevealed, setSynthesisPanelRevealed] = useState(false)
-  const hideSynthesisSettings = fromHomeBudgetShortcut && !synthesisPanelRevealed
+  const hideSynthesisSettings =
+    (fromHomeBudgetShortcut || openedSavedBuildFromUrl) && !synthesisPanelRevealed
 
   // Sort categories by order
   const sortedCategories = useMemo(() => {
@@ -1114,8 +1099,7 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
 
   const estimatedWattage = useMemo(() => estimateBuildWattage(build), [build])
 
-  const { cpuPerformance, gpuPerformance, ramPerformance, storagePerformance, performanceScore } =
-    useMemo(() => analyzeBuildPerformance(build), [build])
+  const { performanceScore } = useMemo(() => analyzeBuildPerformance(build), [build])
 
   const getPerformanceTier = (score: number) => {
     if (score >= 78) return { label: 'Върхов Клас', color: 'text-purple-400', bgColor: 'bg-purple-500/20' }
@@ -1125,40 +1109,8 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
     return { label: 'Слаб', color: 'text-red-400', bgColor: 'bg-red-500/20' }
   }
 
-  // Calculate FPS estimates
-  const fpsEstimates = useMemo(() => {
-    if (!build.gpu) {
-      return Object.keys(gameFpsEstimates).map((game) => ({ game, fps: 0 }))
-    }
-
-    const gpuScore = gpuPerformance.gaming / 100
-    const cpuScore = Math.max(cpuPerformance.gaming / 100, 0.3)
-    const ramCapacity = build.ram ? asFiniteNumber(build.ram.specs?.capacity, 8) : 8
-    const ramSpeed = build.ram ? asFiniteNumber(build.ram.specs?.speed, 3200) : 3200
-    const ramFactor = Math.min(
-      1.08,
-      Math.max(0.55, (ramCapacity / 32) * 0.6 + (ramSpeed / 6400) * 0.4)
-    )
-    const vram = asFiniteNumber(build.gpu.specs?.vram, 8)
-
-    return Object.keys(gameFpsEstimates).map((game) => {
-      const profile = gameProfiles[game as keyof typeof gameProfiles]
-      const vramPenalty =
-        vram >= profile.vramMin
-          ? 1
-          : Math.max(0.64, 1 - (profile.vramMin - vram) * 0.08)
-
-      const combinedFactor =
-        gpuScore * profile.gpuWeight +
-        cpuScore * profile.cpuWeight +
-        ramFactor * profile.ramWeight
-
-      return {
-        game,
-        fps: Math.max(18, Math.round(profile.base * combinedFactor * vramPenalty)),
-      }
-    })
-  }, [build.gpu, build.ram, gpuPerformance, cpuPerformance])
+  // FPS @1080p: калибрирани спрямо реф. система + таблични/евристични gaming индекси (lib/game-fps-estimate)
+  const fpsEstimates = useMemo(() => estimateBuildGameFps1080p(build), [build])
 
   // Compatibility issues
   const compatibilityIssues = useMemo<CompatibilityIssue[]>(() => {
@@ -2109,7 +2061,7 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
         <div className="flex gap-6">
           {/* Components List */}
           <div className="flex-1 space-y-3">
-            {/* Mobile Auto Generate Button */}
+            {!hideSynthesisSettings ? (
             <Button 
               variant="default" 
               onClick={handleAutoGenerate}
@@ -2118,6 +2070,7 @@ export function BuilderPage({ categories, brands, components }: BuilderPageProps
               <Wand2 className="h-4 w-4" />
               Автоматична Генерация
             </Button>
+            ) : null}
             <Button
               variant="outline"
               onClick={() => handleExportBuild('txt')}

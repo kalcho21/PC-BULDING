@@ -20,21 +20,28 @@ import {
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
-import { Plus, Trash2, Edit, Eye, Share2, Lock, Globe, Cpu, Gauge, Download, GitCompare } from "lucide-react"
+import { Plus, Trash2, Edit, Eye, Share2, Lock, Globe, Cpu, Gauge, Download, GitCompare, ShoppingCart } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useCart } from "@/components/cart-provider"
 
 interface BuildWithItems extends Build {
   build_items: {
     id: string
-    component: Component
+    component: Component | Component[]
     quantity: number
   }[]
 }
 
+function unwrapBuildComponent(raw: Component | Component[] | null | undefined): Component | null {
+  if (!raw) return null
+  return Array.isArray(raw) ? raw[0] ?? null : raw
+}
+
 export default function BuildsPage() {
   const router = useRouter()
+  const { addToCart } = useCart()
   const [builds, setBuilds] = useState<BuildWithItems[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
@@ -200,6 +207,54 @@ export default function BuildsPage() {
     })
   }
 
+  const orderBuild = (build: BuildWithItems) => {
+    if (!build.build_items?.length) {
+      toast.error("Няма добавени компоненти към тази сглобка — отвори я в конфигуратора и добави части.")
+      return
+    }
+
+    let addedPieces = 0
+    const skippedOutOfStock: string[] = []
+    const skippedInvalid: string[] = []
+
+    for (const item of build.build_items) {
+      const comp = unwrapBuildComponent(item.component)
+      if (!comp?.id) {
+        skippedInvalid.push("неизвестен компонент")
+        continue
+      }
+      if (!comp.in_stock) {
+        skippedOutOfStock.push(comp.name)
+        continue
+      }
+      addToCart(comp, item.quantity)
+      addedPieces += item.quantity
+    }
+
+    if (addedPieces === 0) {
+      if (skippedOutOfStock.length > 0) {
+        toast.error("Нито един от компонентите не е наличен в момента.")
+      } else {
+        toast.error("Неуспешно добавяне в количката.")
+      }
+      return
+    }
+
+    toast.success(`Частите от „${build.name}“ са добавени в количката (${addedPieces} бр.).`)
+    if (skippedOutOfStock.length > 0) {
+      toast.warning(
+        `Без наличност (не са добавени): ${skippedOutOfStock.slice(0, 5).join(", ")}${
+          skippedOutOfStock.length > 5 ? "…" : ""
+        }`
+      )
+    }
+    if (skippedInvalid.length > 0) {
+      toast.warning("Някои редове от сглобката липсват в базата — опресни страницата или отвори сглобката в конфигуратора.")
+    }
+
+    router.push("/cart")
+  }
+
   const exportBuild = (build: BuildWithItems) => {
     const lines = [
       `Име: ${build.name}`,
@@ -208,10 +263,13 @@ export default function BuildsPage() {
       `Обща цена: ${formatPrice(build.total_price || 0)}`,
       `Оценка: ${build.performance_score || 0}`,
       "",
-      ...build.build_items.map(
-        (item) =>
-          `${item.component.category?.name || getCategoryName(item.component.category_id)}: ${item.component.name} x${item.quantity}`
-      ),
+      ...build.build_items.flatMap((item) => {
+        const comp = unwrapBuildComponent(item.component)
+        if (!comp) return []
+        return [
+          `${comp.category?.name || getCategoryName(comp.category_id)}: ${comp.name} x${item.quantity}`,
+        ]
+      }),
     ].join("\n")
 
     const blob = new Blob([lines], { type: "text/plain;charset=utf-8" })
@@ -407,15 +465,14 @@ export default function BuildsPage() {
                 <CardContent>
                   {/* Components preview */}
                   <div className="flex flex-wrap gap-1 mb-4">
-                    {build.build_items.slice(0, 5).map((item) => (
-                      <Badge 
-                        key={item.id} 
-                        variant="secondary"
-                        className="text-xs"
-                      >
-                        {getCategoryName(item.component.category_id)}
-                      </Badge>
-                    ))}
+                    {build.build_items.slice(0, 5).map((item) => {
+                      const comp = unwrapBuildComponent(item.component)
+                      return (
+                        <Badge key={item.id} variant="secondary" className="text-xs">
+                          {comp ? getCategoryName(comp.category_id) : "—"}
+                        </Badge>
+                      )
+                    })}
                     {build.build_items.length > 5 && (
                       <Badge variant="outline" className="text-xs">
                         +{build.build_items.length - 5} more
@@ -445,6 +502,14 @@ export default function BuildsPage() {
                   </div>
 
                   {/* Actions */}
+                  <Button
+                    className="w-full mb-3"
+                    disabled={build.build_items.length === 0}
+                    onClick={() => orderBuild(build)}
+                  >
+                    <ShoppingCart className="w-4 h-4 mr-2" />
+                    Поръчай сглобката
+                  </Button>
                   <div className="flex gap-2">
                     <Link href={`/builder?build=${build.id}`} className="flex-1">
                       <Button variant="outline" className="w-full" size="sm">
